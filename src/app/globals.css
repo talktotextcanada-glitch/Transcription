@@ -80,3 +80,31 @@ iframe[src*="apigateway"] {
   left: auto !important;
 }
 
+/* Prevent third-party widget overlays from blocking header/navigation */
+#audioeye_wrapper,
+#audioeye-overlay,
+[id^="audioeye"],
+[class*="audioeye-"] {
+  pointer-events: none;
+}
+
+#audioeye-launcher,
+.audioeye-launcher,
+[id^="audioeye"] button,
+[id^="audioeye"] a {
+  pointer-events: auto;
+}
+
+/* Ensure webchat widget doesn't block page interactions */
+[id*="webchat"]:not([id*="webchat-launcher"]):not(button):not(iframe) {
+  pointer-events: none;
+}
+
+#webchat-launcher,
+.webchat-launcher,
+iframe[src*="apigateway"],
+[id*="webchat"] button,
+[id*="webchat"] iframe {
+  pointer-events: auto;
+}
+

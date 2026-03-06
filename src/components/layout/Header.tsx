@@ -15,7 +15,7 @@ export function Header() {
   const router = useRouter();
 
   return (
-    <header className="bg-white border-b border-gray-200 sticky top-0 z-50">
+    <header className="bg-white border-b border-gray-200 sticky top-0 z-[9999]">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center h-16">
           <div className="flex items-center">
@@ -82,13 +82,13 @@ export function Header() {
                 <Button
                   variant="ghost"
                   onClick={() => router.push('/signin')}
-                  className="text-gray-600 hover:text-[#003366]"
+                  className="text-gray-600 hover:text-[#003366] cursor-pointer relative z-10"
                 >
                   Sign In
                 </Button>
                 <Button
                   onClick={() => router.push('/signup')}
-                  className="bg-[#003366] hover:bg-[#002244] text-white"
+                  className="bg-[#003366] hover:bg-[#002244] text-white cursor-pointer relative z-10"
                 >
                   Sign Up
                 </Button>

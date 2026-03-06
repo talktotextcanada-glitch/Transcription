@@ -131,11 +131,13 @@ export default function BillingPage() {
   // Wallet payment links - different for test and live mode
   const walletLinks = isTestMode ? {
     // TEST MODE - Use test payment links from environment or fallback to test UI
+    '1': '#', // Test only - $1 for Stripe testing
     '50': process.env.NEXT_PUBLIC_STRIPE_TEST_WALLET_LINK_50 || '#',
     '200': process.env.NEXT_PUBLIC_STRIPE_TEST_WALLET_LINK_200 || '#',
     '500': process.env.NEXT_PUBLIC_STRIPE_TEST_WALLET_LINK_500 || '#'
   } : {
     // LIVE MODE - Use environment variables for production links
+    '1': '', // Test only - should not appear in production
     '50': process.env.NEXT_PUBLIC_STRIPE_WALLET_LINK_50 || '',
     '200': process.env.NEXT_PUBLIC_STRIPE_WALLET_LINK_200 || '',
     '500': process.env.NEXT_PUBLIC_STRIPE_WALLET_LINK_500 || ''
@@ -568,15 +570,15 @@ export default function BillingPage() {
                   </Alert>
                 ) : null}
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  {['50', '200', '500'].map((amount) => (
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  {['1', '50', '200', '500'].map((amount) => (
                     <Card key={amount} className="border shadow-sm hover:shadow-md transition-shadow">
                       <CardContent className="p-6 text-center">
                         <div className="text-3xl font-bold text-[#003366] mb-2">
                           CA${amount}
                         </div>
                         <p className="text-gray-600 mb-2">
-                          {amount === '50' ? 'Quick Start' : amount === '200' ? 'Standard' : 'Professional'}
+                          {amount === '1' ? 'TEST ONLY' : amount === '50' ? 'Quick Start' : amount === '200' ? 'Standard' : 'Professional'}
                         </p>
                         <p className="text-xs text-gray-500 mb-4">
                           ~{Math.floor(parseInt(amount) / (pricingSettings?.payAsYouGo.ai || 0.40))} AI minutes<br/>

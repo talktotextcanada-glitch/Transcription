@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef } from 'react';
-import { Download, CheckCircle, XCircle, Edit, Eye, Music, Upload } from 'lucide-react';
+import { Download, CheckCircle, XCircle, Edit, Eye, Music, Upload, RotateCcw, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { StatusBadge } from '@/components/ui/StatusBadge';
@@ -232,6 +232,88 @@ export function WorkQueueCard({ job, userEmail, onComplete }: WorkQueueCardProps
     setShowModal(true);
   };
 
+  // Retry failed job with Speechmatics
+  const handleRetryWithAI = async () => {
+    if (!job.id) return;
+    setIsLoading(true);
+    try {
+      const response = await fetch('/api/admin/process-job', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jobId: job.id,
+          language: 'en',
+          operatingPoint: 'standard'
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to process job');
+      }
+
+      toast({
+        title: "Processing Started",
+        description: "Job is now being processed with Speechmatics AI.",
+      });
+      onComplete();
+    } catch (error) {
+      console.error('Retry error:', error);
+      toast({
+        title: "Error",
+        description: "Failed to retry job. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Resubmit stuck processing job
+  const handleResubmit = async () => {
+    if (!job.id) return;
+    setIsLoading(true);
+    try {
+      toast({
+        title: "Resubmitting job...",
+        description: "This may take a few minutes for large files.",
+      });
+
+      const response = await fetch('/api/admin/process-job', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jobId: job.id,
+          language: 'en',
+          operatingPoint: 'standard'
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to resubmit job');
+      }
+
+      toast({
+        title: "Job Resubmitted",
+        description: "Job has been resubmitted to Speechmatics.",
+      });
+      onComplete();
+    } catch (error) {
+      console.error('Resubmit error:', error);
+      toast({
+        title: "Error",
+        description: "Failed to resubmit job. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Check if this is a stuck processing job
+  const isStuckProcessing = job.status === 'processing' && !job.speechmaticsJobId;
+
   return (
     <>
       <div
@@ -296,7 +378,9 @@ export function WorkQueueCard({ job, userEmail, onComplete }: WorkQueueCardProps
           )}
 
           {/* Actions based on status */}
-          {job.status === 'pending-review' && (
+
+          {/* Hybrid jobs: pending-review or under-review */}
+          {(job.status === 'pending-review' || job.status === 'under-review') && (
             <>
               <Button
                 size="sm"
@@ -320,7 +404,8 @@ export function WorkQueueCard({ job, userEmail, onComplete }: WorkQueueCardProps
             </>
           )}
 
-          {job.status === 'pending-transcription' && (
+          {/* Human jobs: pending-transcription or queued */}
+          {(job.status === 'pending-transcription' || (job.mode === 'human' && job.status === 'queued')) && (
             <>
               <Button
                 size="sm"
@@ -338,7 +423,7 @@ export function WorkQueueCard({ job, userEmail, onComplete }: WorkQueueCardProps
                 disabled={uploadingFile}
               >
                 <Upload className="h-4 w-4 mr-1" />
-                {uploadingFile ? 'Loading...' : 'Upload'}
+                {uploadingFile ? 'Uploading...' : 'Upload'}
               </Button>
               <input
                 ref={fileInputRef}
@@ -350,8 +435,37 @@ export function WorkQueueCard({ job, userEmail, onComplete }: WorkQueueCardProps
             </>
           )}
 
-          {/* Reject button for both statuses */}
-          {(job.status === 'pending-review' || job.status === 'pending-transcription') && (
+          {/* Failed jobs: retry with AI */}
+          {job.status === 'failed' && (job.mode === 'ai' || job.mode === 'hybrid') && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-purple-600 border-purple-300 hover:bg-purple-50"
+              onClick={handleRetryWithAI}
+              disabled={isLoading}
+            >
+              <Zap className="h-4 w-4 mr-1" />
+              {isLoading ? 'Retrying...' : 'Retry AI'}
+            </Button>
+          )}
+
+          {/* Stuck processing jobs: resubmit */}
+          {isStuckProcessing && (job.mode === 'ai' || job.mode === 'hybrid') && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="text-orange-600 border-orange-300 hover:bg-orange-50"
+              onClick={handleResubmit}
+              disabled={isLoading}
+            >
+              <RotateCcw className="h-4 w-4 mr-1" />
+              {isLoading ? 'Resubmitting...' : 'Resubmit'}
+            </Button>
+          )}
+
+          {/* Reject button for actionable statuses */}
+          {(job.status === 'pending-review' || job.status === 'under-review' ||
+            job.status === 'pending-transcription' || (job.mode === 'human' && job.status === 'queued')) && (
             <Button
               size="sm"
               variant="outline"
@@ -373,7 +487,7 @@ export function WorkQueueCard({ job, userEmail, onComplete }: WorkQueueCardProps
             <div className="p-4 sm:p-6">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-base sm:text-lg font-semibold text-[#003366]">
-                  {job.status === 'pending-review' ? 'Review AI Transcript' : 'Create Transcript'}
+                  {(job.status === 'pending-review' || job.status === 'under-review') ? 'Review AI Transcript' : 'Create Transcript'}
                 </h3>
                 <Button
                   variant="ghost"
@@ -432,8 +546,8 @@ export function WorkQueueCard({ job, userEmail, onComplete }: WorkQueueCardProps
                 )}
               </div>
 
-              {/* AI Transcript for review */}
-              {job.status === 'pending-review' && (job.transcript || job.transcriptStoragePath) && (
+              {/* AI Transcript for review (hybrid jobs) */}
+              {(job.status === 'pending-review' || job.status === 'under-review') && (job.transcript || job.transcriptStoragePath) && (
                 <div className="mb-4">
                   <h4 className="font-medium text-[#003366] mb-2 text-sm sm:text-base">AI Transcript:</h4>
                   <div className="p-3 bg-gray-50 border rounded text-sm max-h-48 sm:max-h-64 overflow-y-auto">
@@ -452,7 +566,7 @@ export function WorkQueueCard({ job, userEmail, onComplete }: WorkQueueCardProps
               )}
 
               {/* Transcript input for human transcription */}
-              {job.status === 'pending-transcription' && (
+              {(job.status === 'pending-transcription' || (job.mode === 'human' && job.status === 'queued')) && (
                 <div className="mb-4">
                   <p className="text-sm text-gray-600 mb-3">
                     Type or paste the transcript below. Or use the <strong>Upload</strong> button to upload a document file directly.
@@ -479,7 +593,7 @@ export function WorkQueueCard({ job, userEmail, onComplete }: WorkQueueCardProps
                 >
                   Cancel
                 </Button>
-                {job.status === 'pending-review' && (
+                {(job.status === 'pending-review' || job.status === 'under-review') && (
                   <Button
                     onClick={handleApprove}
                     disabled={isLoading}
@@ -488,7 +602,7 @@ export function WorkQueueCard({ job, userEmail, onComplete }: WorkQueueCardProps
                     {isLoading ? <LoadingSpinner size="sm" /> : 'Approve Transcript'}
                   </Button>
                 )}
-                {job.status === 'pending-transcription' && (
+                {(job.status === 'pending-transcription' || (job.mode === 'human' && job.status === 'queued')) && (
                   <Button
                     onClick={handleSubmitTranscription}
                     disabled={isLoading || !transcript.trim()}

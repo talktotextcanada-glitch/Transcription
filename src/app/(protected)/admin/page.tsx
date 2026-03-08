@@ -59,10 +59,20 @@ export default function AdminPage() {
         ...docSnap.data()
       } as TranscriptionJob));
 
-      // Filter for jobs needing admin action
-      const actionableJobs = allJobs.filter(job =>
-        job.status === 'pending-review' || job.status === 'pending-transcription'
-      );
+      // Filter for jobs needing admin action (matches queue page logic)
+      const actionableJobs = allJobs.filter(job => {
+        const isStuckProcessing = job.status === 'processing' && !job.speechmaticsJobId;
+        return (
+          // Human mode jobs (except completed/cancelled)
+          (job.mode === 'human' && !['complete', 'cancelled'].includes(job.status)) ||
+          // Hybrid mode jobs needing review
+          (job.mode === 'hybrid' && ['pending-review', 'under-review'].includes(job.status)) ||
+          // Failed jobs that might need retry
+          ((job.mode === 'ai' || job.mode === 'hybrid') && job.status === 'failed') ||
+          // Stuck processing jobs
+          isStuckProcessing
+        );
+      });
 
       // Sort: rush first, then oldest first
       actionableJobs.sort((a, b) => {

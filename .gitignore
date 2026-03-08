@@ -64,3 +64,4 @@ client/dev-other*
 client/*.tar.gz
 
 *.md
+client/templates/

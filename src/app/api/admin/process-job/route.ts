@@ -1,10 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { adminAuth, adminDb } from '@/lib/firebase/admin';
-
-// Set maxDuration to 5 minutes for Vercel deployment
-export const maxDuration = 300;
 import { speechmaticsService } from '@/lib/speechmatics/service';
+
+// Vercel configuration
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+export const maxDuration = 300; // 5 minutes
 import { getTranscriptionByIdAdmin, updateTranscriptionStatusAdmin } from '@/lib/firebase/transcriptions-admin';
 
 // Handle CORS preflight
@@ -103,51 +105,102 @@ export async function POST(request: NextRequest) {
     }
 
     console.log(`[Admin API] Starting Speechmatics processing for job ${jobId}`);
+    console.log(`[Admin API] File size: ${audioBuffer.length} bytes, duration: ${transcriptionJob.duration}s`);
 
-    // Process with Speechmatics
-    const result = await speechmaticsService.transcribeAudio(
-      audioBuffer,
-      transcriptionJob.originalFilename,
-      {
-        language,
-        operatingPoint,
-        enableDiarization: true,
-        enablePunctuation: true,
-        domain: transcriptionJob.domain || 'general',
-        removeDisfluencies: !transcriptionJob.includeFiller // Remove filler words if includeFiller is false
-      }
-    );
+    // Use webhook-based processing for files longer than 5 minutes (safer for large files)
+    const useWebhook = transcriptionJob.duration > 300;
 
-    if (result.success && result.transcript) {
-      // Determine final status based on transcription mode
-      const finalStatus = transcriptionJob.mode === 'hybrid' ? 'pending-review' : 'complete';
-      
-      await updateTranscriptionStatusAdmin(jobId, finalStatus, {
-        transcript: result.transcript,
-        duration: result.duration || transcriptionJob.duration // Keep duration in seconds
-      });
+    if (useWebhook) {
+      // Use webhook-based async processing
+      console.log(`[Admin API] Using webhook-based processing for long file`);
 
-      console.log(`[Admin API] Successfully processed job ${jobId} - Status: ${finalStatus}`);
-      
-      return NextResponse.json({
-        success: true,
-        message: `Job processed successfully`,
-        jobId,
-        status: finalStatus,
-        transcript: result.transcript?.substring(0, 100) + '...' // Preview only
-      });
-      
-    } else {
-      await updateTranscriptionStatusAdmin(jobId, 'failed', {
-        specialInstructions: `Manual processing failed: ${result.error || 'Unknown error'}`
-      });
-      
-      console.error(`[Admin API] Failed to process job ${jobId}:`, result.error);
-      
-      return NextResponse.json(
-        { error: result.error || 'Speechmatics transcription failed' },
-        { status: 500 }
+      const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://www.talktotext.ca';
+      const webhookToken = process.env.SPEECHMATICS_WEBHOOK_TOKEN || 'default-webhook-secret';
+      const callbackUrl = `${baseUrl}/api/speechmatics/callback?token=${webhookToken}&jobId=${jobId}`;
+
+      const result = await speechmaticsService.submitJobWithWebhook(
+        audioBuffer,
+        transcriptionJob.originalFilename,
+        {
+          language,
+          operatingPoint,
+          enableDiarization: true,
+          enablePunctuation: true,
+          domain: transcriptionJob.domain || 'general',
+          removeDisfluencies: !transcriptionJob.includeFiller
+        },
+        callbackUrl
       );
+
+      if (result.success && result.jobId) {
+        await updateTranscriptionStatusAdmin(jobId, 'processing', {
+          speechmaticsJobId: result.jobId
+        });
+
+        console.log(`[Admin API] Job ${jobId} submitted to Speechmatics with ID: ${result.jobId}`);
+
+        return NextResponse.json({
+          success: true,
+          message: 'Job submitted to Speechmatics. It will complete in a few minutes.',
+          jobId,
+          speechmaticsJobId: result.jobId,
+          status: 'processing'
+        });
+      } else {
+        await updateTranscriptionStatusAdmin(jobId, 'failed', {
+          specialInstructions: `Failed to submit to Speechmatics: ${result.error || 'Unknown error'}`
+        });
+
+        return NextResponse.json(
+          { error: result.error || 'Failed to submit to Speechmatics' },
+          { status: 500 }
+        );
+      }
+    } else {
+      // Use synchronous processing for shorter files
+      const result = await speechmaticsService.transcribeAudio(
+        audioBuffer,
+        transcriptionJob.originalFilename,
+        {
+          language,
+          operatingPoint,
+          enableDiarization: true,
+          enablePunctuation: true,
+          domain: transcriptionJob.domain || 'general',
+          removeDisfluencies: !transcriptionJob.includeFiller
+        }
+      );
+
+      if (result.success && result.transcript) {
+        const finalStatus = transcriptionJob.mode === 'hybrid' ? 'pending-review' : 'complete';
+
+        await updateTranscriptionStatusAdmin(jobId, finalStatus, {
+          transcript: result.transcript,
+          duration: result.duration || transcriptionJob.duration
+        });
+
+        console.log(`[Admin API] Successfully processed job ${jobId} - Status: ${finalStatus}`);
+
+        return NextResponse.json({
+          success: true,
+          message: `Job processed successfully`,
+          jobId,
+          status: finalStatus,
+          transcript: result.transcript?.substring(0, 100) + '...'
+        });
+
+      } else {
+        await updateTranscriptionStatusAdmin(jobId, 'failed', {
+          specialInstructions: `Manual processing failed: ${result.error || 'Unknown error'}`
+        });
+
+        console.error(`[Admin API] Failed to process job ${jobId}:`, result.error);
+
+        return NextResponse.json(
+          { error: result.error || 'Speechmatics transcription failed' },
+          { status: 500 }
+        );
+      }
     }
 
   } catch (error) {

@@ -290,7 +290,159 @@ export class SpeechmaticsService {
   }
 
   /**
-   * Submit job with webhook callback (async)
+   * Submit job via URL using fetch_data (no file download required)
+   * This is the recommended approach for large files to avoid serverless memory limits
+   */
+  async submitJobWithFetchData(
+    audioUrl: string,
+    filename: string,
+    config: SpeechmaticsConfig,
+    callbackUrl: string
+  ): Promise<{ success: boolean; jobId?: string; error?: string }> {
+    try {
+      console.log(`[Speechmatics] ====== SUBMITTING JOB WITH FETCH_DATA ======`);
+      console.log(`[Speechmatics] Audio URL: ${audioUrl.substring(0, 100)}...`);
+      console.log(`[Speechmatics] Callback URL: ${callbackUrl}`);
+      console.log(`[Speechmatics] Timestamp: ${new Date().toISOString()}`);
+
+      if (!this.isConfigured) {
+        return {
+          success: false,
+          error: 'Speechmatics API is not configured'
+        };
+      }
+
+      // Create job configuration with webhook and diarization
+      const transcriptionConfig: any = {
+        language: config.language || 'en',
+        operating_point: config.operatingPoint || 'standard',
+        output_locale: 'en-GB'
+      };
+
+      // Add speaker diarization if enabled
+      if (config.enableDiarization) {
+        transcriptionConfig.diarization = 'speaker';
+
+        if (config.speakerSensitivity !== undefined) {
+          transcriptionConfig.speaker_diarization_config = {
+            speaker_sensitivity: Math.min(Math.max(config.speakerSensitivity, 0), 1)
+          };
+        }
+      }
+
+      // Add domain-specific vocabulary
+      if (config.domain === 'medical') {
+        transcriptionConfig.additional_vocab = MEDICAL_VOCABULARY;
+        console.log(`[Speechmatics] Using medical vocabulary (${MEDICAL_VOCABULARY.length} terms)`);
+      } else if (config.domain === 'legal') {
+        transcriptionConfig.additional_vocab = LEGAL_VOCABULARY;
+        console.log(`[Speechmatics] Using legal vocabulary (${LEGAL_VOCABULARY.length} terms)`);
+      }
+
+      // Add disfluency filtering
+      if (config.removeDisfluencies !== undefined) {
+        transcriptionConfig.transcript_filtering_config = {
+          remove_disfluencies: config.removeDisfluencies
+        };
+        console.log(`[Speechmatics] Disfluency removal: ${config.removeDisfluencies ? 'ENABLED' : 'DISABLED'}`);
+      }
+
+      // Job config using fetch_data instead of file upload
+      const jobConfig = {
+        type: 'transcription',
+        transcription_config: transcriptionConfig,
+        fetch_data: {
+          url: audioUrl
+        },
+        notification_config: [{
+          url: callbackUrl,
+          contents: ['jobinfo'],
+          auth_headers: [
+            'ngrok-skip-browser-warning: true'
+          ]
+        }]
+      };
+
+      console.log(`[Speechmatics] Job config:`, JSON.stringify(jobConfig, null, 2));
+
+      // Submit job via JSON POST (no multipart needed with fetch_data)
+      const response = await fetch(`${this.apiUrl}/jobs`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(jobConfig)
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`[Speechmatics] Job submission failed:`, errorText);
+
+        // Check if this is an enhanced model quota limit error
+        if (response.status === 403 && errorText.includes('Enhanced Model transcription')) {
+          console.log('[Speechmatics] Enhanced model quota exceeded, retrying with standard model...');
+
+          const fallbackConfig = {
+            ...jobConfig,
+            transcription_config: {
+              ...transcriptionConfig,
+              operating_point: 'standard'
+            }
+          };
+
+          const fallbackResponse = await fetch(`${this.apiUrl}/jobs`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${this.apiKey}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify(fallbackConfig)
+          });
+
+          if (!fallbackResponse.ok) {
+            const fallbackErrorText = await fallbackResponse.text();
+            throw new Error(`HTTP ${fallbackResponse.status}: ${fallbackErrorText}`);
+          }
+
+          const fallbackData = await fallbackResponse.json();
+          console.log(`[Speechmatics] Fallback job submitted with ID: ${fallbackData.id}`);
+
+          return {
+            success: true,
+            jobId: fallbackData.id
+          };
+        }
+
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+
+      const responseData = await response.json();
+      console.log(`[Speechmatics] Job submitted successfully with ID: ${responseData.id}`);
+
+      return {
+        success: true,
+        jobId: responseData.id
+      };
+
+    } catch (error: unknown) {
+      console.error('[Speechmatics] Job submission with fetch_data failed:', error);
+
+      let errorMessage = 'Unknown error';
+      if (error instanceof Error) {
+        errorMessage = error.message;
+      }
+
+      return {
+        success: false,
+        error: errorMessage
+      };
+    }
+  }
+
+  /**
+   * Submit job with webhook callback (async) - uploads file buffer
+   * Use submitJobWithFetchData for large files to avoid memory limits
    */
   async submitJobWithWebhook(
     audioBuffer: Buffer,

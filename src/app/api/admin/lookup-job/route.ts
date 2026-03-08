@@ -189,27 +189,23 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
-    // Download the audio file
-    console.log(`[Admin Resubmit] Downloading audio from: ${job.downloadURL}`);
-
-    const audioResponse = await fetch(job.downloadURL);
-    if (!audioResponse.ok) {
-      return NextResponse.json({
-        error: `Failed to download audio file: ${audioResponse.status}`
-      }, { status: 500 });
-    }
-
-    const audioBuffer = Buffer.from(await audioResponse.arrayBuffer());
-    console.log(`[Admin Resubmit] Downloaded ${audioBuffer.length} bytes`);
+    // Use fetch_data for all files (safer for serverless memory limits)
+    console.log(`[Admin Resubmit] Using fetch_data approach for job ${jobId}`);
+    console.log(`[Admin Resubmit] Audio URL: ${job.downloadURL.substring(0, 100)}...`);
 
     // Update status to processing
     await updateTranscriptionStatusAdmin(jobId, 'processing');
 
-    // Submit to Speechmatics
-    console.log(`[Admin Resubmit] Submitting to Speechmatics...`);
+    // Get base URL for webhook callback
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://www.talktotext.ca';
+    const webhookToken = process.env.SPEECHMATICS_WEBHOOK_TOKEN || 'default-webhook-secret';
+    const callbackUrl = `${baseUrl}/api/speechmatics/callback?token=${webhookToken}&jobId=${jobId}`;
 
-    const result = await speechmaticsService.transcribeAudio(
-      audioBuffer,
+    console.log(`[Admin Resubmit] Webhook callback URL: ${callbackUrl}`);
+
+    // Submit to Speechmatics using fetch_data (URL-based, no file download)
+    const result = await speechmaticsService.submitJobWithFetchData(
+      job.downloadURL,
       job.originalFilename,
       {
         language,
@@ -217,26 +213,28 @@ export async function POST(request: NextRequest) {
         enableDiarization: true,
         enablePunctuation: true,
         domain: job.domain || 'general',
-      }
+      },
+      callbackUrl
     );
 
-    if (result.success && result.transcript) {
-      const finalStatus = job.mode === 'hybrid' ? 'pending-review' : 'complete';
-
-      await updateTranscriptionStatusAdmin(jobId, finalStatus, {
-        transcript: result.transcript,
-        timestampedTranscript: result.timestampedTranscript,
+    if (result.success && result.jobId) {
+      // Update job with Speechmatics job ID
+      await updateTranscriptionStatusAdmin(jobId, 'processing', {
         speechmaticsJobId: result.jobId,
+        webhookUrl: callbackUrl,
+        webhookSubmittedAt: new Date().toISOString(),
+        processingMethod: 'fetch_data'
       });
 
-      console.log(`[Admin Resubmit] Job ${jobId} completed successfully`);
+      console.log(`[Admin Resubmit] Job ${jobId} submitted to Speechmatics with ID: ${result.jobId}`);
 
       return NextResponse.json({
         success: true,
-        message: 'Job resubmitted and completed',
+        message: 'Job submitted for processing (webhook-based)',
         jobId,
-        status: finalStatus,
-        transcriptPreview: result.transcript?.substring(0, 200) + '...',
+        speechmaticsJobId: result.jobId,
+        status: 'processing',
+        note: 'Transcription will complete asynchronously via webhook callback'
       });
     } else {
       await updateTranscriptionStatusAdmin(jobId, 'failed', {
@@ -245,7 +243,7 @@ export async function POST(request: NextRequest) {
 
       return NextResponse.json({
         success: false,
-        error: result.error || 'Speechmatics transcription failed',
+        error: result.error || 'Speechmatics submission failed',
         jobId,
       }, { status: 500 });
     }

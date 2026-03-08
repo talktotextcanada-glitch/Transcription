@@ -204,66 +204,95 @@ export async function POST(request: NextRequest) {
       await updateTranscriptionStatusAdmin(jobId, 'processing');
     }
 
-    // Download the audio file from Firebase Storage
-    const audioBuffer = await downloadAudioFile(transcriptionJob.downloadURL);
+    // Determine processing strategy based on file duration
+    // Files longer than 10 minutes (600s) use fetch_data to avoid memory issues
+    // Files longer than 5 minutes (300s) use webhook but still download
+    // Short files use synchronous processing
+    const useFetchData = transcriptionJob.duration
+      ? transcriptionJob.duration > 600  // 10 minutes - use URL-based submission
+      : true; // Default to fetch_data if duration unknown (safer for large files)
 
-    if (!audioBuffer) {
-      console.error(`[POST][${requestId}] Failed to download audio file from Firebase Storage`);
-      await updateTranscriptionStatusAdmin(jobId, 'failed', {
-        specialInstructions: 'Failed to download audio file'
-      });
-
-      return NextResponse.json(
-        { error: 'Failed to download audio file', requestId },
-        {
-          status: 500,
-          headers: { 'Access-Control-Allow-Origin': '*' }
-        }
-      );
-    }
-
-    // Use webhook processing for longer files to avoid timeouts
-    // Files longer than 5 minutes use webhook callback for async processing
-    // If duration is missing/0/null, default to webhook mode for safety
     const useWebhook = transcriptionJob.duration
       ? transcriptionJob.duration > 300  // 5 minutes
-      : true; // Default to webhook if duration unknown (safer for long files)
+      : true; // Default to webhook if duration unknown
 
-    console.log(`[API] File duration: ${transcriptionJob.duration || 'unknown'}s, using ${useWebhook ? 'WEBHOOK' : 'SYNCHRONOUS'} processing`);
+    console.log(`[API] File duration: ${transcriptionJob.duration || 'unknown'}s`);
+    console.log(`[API] Processing strategy: ${useFetchData ? 'FETCH_DATA (URL-based)' : useWebhook ? 'WEBHOOK (buffer upload)' : 'SYNCHRONOUS'}`);
+
+    const speechmaticsConfig = {
+      language,
+      operatingPoint,
+      enableDiarization: true,
+      enablePunctuation: true,
+      speakerSensitivity: 0.6,
+      domain: transcriptionJob.domain || 'general',
+      removeDisfluencies: !transcriptionJob.includeFiller
+    };
 
     let result;
-    if (useWebhook) {
-      // Use webhook-based processing for longer files
+
+    if (useFetchData) {
+      // Use fetch_data for large files - Speechmatics downloads directly from URL
+      // This avoids downloading the file to our serverless function
+      console.log(`[API] Using fetch_data for large file - Speechmatics will fetch from URL directly`);
+
+      result = await processTranscriptionWithFetchData(
+        jobId,
+        transcriptionJob.downloadURL,
+        transcriptionJob.originalFilename,
+        speechmaticsConfig,
+        request
+      );
+    } else if (useWebhook) {
+      // For medium files, download and use webhook
+      const audioBuffer = await downloadAudioFile(transcriptionJob.downloadURL);
+
+      if (!audioBuffer) {
+        console.error(`[POST][${requestId}] Failed to download audio file from Firebase Storage`);
+        await updateTranscriptionStatusAdmin(jobId, 'failed', {
+          specialInstructions: 'Failed to download audio file'
+        });
+
+        return NextResponse.json(
+          { error: 'Failed to download audio file', requestId },
+          {
+            status: 500,
+            headers: { 'Access-Control-Allow-Origin': '*' }
+          }
+        );
+      }
+
       result = await processTranscriptionWithWebhook(
         jobId,
         audioBuffer,
         transcriptionJob.originalFilename,
-        {
-          language,
-          operatingPoint,
-          enableDiarization: true,
-          enablePunctuation: true,
-          speakerSensitivity: 0.6, // Higher sensitivity for better speaker detection
-          domain: transcriptionJob.domain || 'general', // Use domain for specialized vocabulary
-          removeDisfluencies: !transcriptionJob.includeFiller // Remove filler words if includeFiller is false
-        },
-        request // Pass the request object for dynamic URL detection
+        speechmaticsConfig,
+        request
       );
     } else {
-      // Use synchronous processing for shorter files
+      // For short files, use synchronous processing
+      const audioBuffer = await downloadAudioFile(transcriptionJob.downloadURL);
+
+      if (!audioBuffer) {
+        console.error(`[POST][${requestId}] Failed to download audio file from Firebase Storage`);
+        await updateTranscriptionStatusAdmin(jobId, 'failed', {
+          specialInstructions: 'Failed to download audio file'
+        });
+
+        return NextResponse.json(
+          { error: 'Failed to download audio file', requestId },
+          {
+            status: 500,
+            headers: { 'Access-Control-Allow-Origin': '*' }
+          }
+        );
+      }
+
       result = await processTranscriptionSynchronous(
         jobId,
         audioBuffer,
         transcriptionJob.originalFilename,
-        {
-          language,
-          operatingPoint,
-          enableDiarization: true,
-          enablePunctuation: true,
-          speakerSensitivity: 0.6, // Higher sensitivity for better speaker detection
-          domain: transcriptionJob.domain || 'general', // Use domain for specialized vocabulary
-          removeDisfluencies: !transcriptionJob.includeFiller // Remove filler words if includeFiller is false
-        }
+        speechmaticsConfig
       );
     }
 
@@ -509,6 +538,100 @@ async function processTranscriptionWithWebhook(
 
   } catch (error) {
     console.error(`[API] Error submitting transcription job ${jobId}:`, error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Internal processing error'
+    };
+  }
+}
+
+/**
+ * Process transcription using fetch_data (URL-based submission)
+ * This is for large files to avoid downloading to serverless memory
+ */
+async function processTranscriptionWithFetchData(
+  jobId: string,
+  audioUrl: string,
+  filename: string,
+  speechmaticsConfig: Record<string, unknown>,
+  request?: NextRequest
+): Promise<{ success: boolean; speechmaticsJobId?: string; error?: string }> {
+  try {
+    console.log(`[API] Starting fetch_data processing for job ${jobId}`);
+    console.log(`[API] Audio URL: ${audioUrl.substring(0, 100)}...`);
+
+    // Determine the base URL dynamically for webhook callback
+    let baseUrl = process.env.NEXT_PUBLIC_APP_URL;
+
+    if (baseUrl && !baseUrl.startsWith('http')) {
+      baseUrl = `https://${baseUrl}`;
+    }
+
+    if (request) {
+      const host = request.headers.get('host');
+      const protocol = request.headers.get('x-forwarded-proto') || 'https';
+      if (host) {
+        baseUrl = `${protocol}://${host}`;
+      }
+    }
+
+    if (!baseUrl) {
+      if (process.env.NODE_ENV === 'development') {
+        baseUrl = 'http://localhost:3002';
+      } else {
+        return { success: false, error: 'Application URL not configured' };
+      }
+    }
+
+    console.log(`[API] Webhook callback base URL: ${baseUrl}`);
+
+    const webhookToken = process.env.SPEECHMATICS_WEBHOOK_TOKEN || 'default-webhook-secret';
+    const callbackUrl = `${baseUrl}/api/speechmatics/callback?token=${webhookToken}&jobId=${jobId}`;
+
+    // Submit job using fetch_data - Speechmatics fetches the file directly
+    const result = await speechmaticsService.submitJobWithFetchData(
+      audioUrl,
+      filename,
+      speechmaticsConfig,
+      callbackUrl
+    );
+
+    console.log(`[API] submitJobWithFetchData result for ${jobId}:`, {
+      success: result.success,
+      speechmaticsJobId: result.jobId,
+      error: result.error
+    });
+
+    if (result.success && result.jobId) {
+      console.log(`[API] Job ${jobId} submitted via fetch_data with Speechmatics ID: ${result.jobId}`);
+
+      // Update database with Speechmatics job ID
+      try {
+        await updateTranscriptionStatusAdmin(jobId, 'processing', {
+          speechmaticsJobId: result.jobId,
+          webhookUrl: callbackUrl,
+          webhookSubmittedAt: new Date().toISOString(),
+          processingMethod: 'fetch_data'
+        });
+        console.log(`[API] Updated job ${jobId} with Speechmatics ID and processing method`);
+      } catch (error) {
+        console.error(`[API] Failed to update job status:`, error);
+      }
+
+      return {
+        success: true,
+        speechmaticsJobId: result.jobId
+      };
+    } else {
+      console.error(`[API] Failed to submit job ${jobId} via fetch_data:`, result.error);
+      return {
+        success: false,
+        error: result.error || 'Failed to submit job to Speechmatics'
+      };
+    }
+
+  } catch (error) {
+    console.error(`[API] Error in fetch_data processing for job ${jobId}:`, error);
     return {
       success: false,
       error: error instanceof Error ? error.message : 'Internal processing error'

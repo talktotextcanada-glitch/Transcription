@@ -1,12 +1,14 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
-import { Users, FileText, DollarSign, TrendingUp, Clock, CheckCircle, Package, Wallet, ArrowRight } from 'lucide-react';
+import React, { useEffect, useState, useCallback } from 'react';
+import { Users, FileText, DollarSign, TrendingUp, Clock, Package, Wallet, ArrowRight, RefreshCw } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Header } from '@/components/layout/Header';
 import { Footer } from '@/components/layout/Footer';
 import { StatusBadge } from '@/components/ui/StatusBadge';
 import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
+import { WorkQueueCard } from '@/components/admin/WorkQueueCard';
 import { useAuth } from '@/contexts/AuthContext';
 import { useCredits } from '@/contexts/CreditContext';
 import { useWallet } from '@/contexts/WalletContext';
@@ -15,7 +17,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { TranscriptionJob } from '@/lib/firebase/transcriptions';
 import { UserData } from '@/lib/firebase/auth';
-import { collection, getDocs, query, orderBy, limit, getFirestore, where } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy, limit, getFirestore, where, doc, getDoc } from 'firebase/firestore';
 
 export default function AdminPage() {
   const { userData, loading: authLoading } = useAuth();
@@ -36,14 +38,76 @@ export default function AdminPage() {
     activePackages: 0,
     totalWalletTopups: 0
   });
-  
-  const [systemHealth, setSystemHealth] = useState({
-    apiStatus: 'operational',
-    processingQueue: 'normal',
-    avgResponseTime: 0,
-    queueLoad: 0,
-    failureRate: 0
-  });
+
+  // Pending jobs for "Your Work" section
+  const [pendingJobs, setPendingJobs] = useState<TranscriptionJob[]>([]);
+  const [pendingJobsLoading, setPendingJobsLoading] = useState(true);
+  const [userEmails, setUserEmails] = useState<{[key: string]: string}>({});
+
+  // Load pending jobs for "Your Work" section
+  const loadPendingJobs = useCallback(async () => {
+    if (userData?.role !== 'admin') return;
+
+    setPendingJobsLoading(true);
+    try {
+      const db = getFirestore();
+      const transcriptionsRef = collection(db, 'transcriptions');
+
+      // Fetch all jobs to filter for pending ones (Firestore doesn't support OR in where)
+      const allJobsQuery = query(
+        transcriptionsRef,
+        orderBy('createdAt', 'desc')
+      );
+
+      const snapshot = await getDocs(allJobsQuery);
+      const allJobs = snapshot.docs.map(docSnap => ({
+        id: docSnap.id,
+        ...docSnap.data()
+      } as TranscriptionJob));
+
+      // Filter for jobs needing admin action
+      const actionableJobs = allJobs.filter(job =>
+        job.status === 'pending-review' || job.status === 'pending-transcription'
+      );
+
+      // Sort: rush first, then oldest first
+      actionableJobs.sort((a, b) => {
+        if (a.rushDelivery && !b.rushDelivery) return -1;
+        if (!a.rushDelivery && b.rushDelivery) return 1;
+        // Compare timestamps - older first
+        const aTime = a.createdAt?.toMillis?.() || 0;
+        const bTime = b.createdAt?.toMillis?.() || 0;
+        return aTime - bTime;
+      });
+
+      // Limit to 10 jobs on dashboard
+      const limitedJobs = actionableJobs.slice(0, 10);
+      setPendingJobs(limitedJobs);
+
+      // Fetch user emails for these jobs
+      const emailMap: {[key: string]: string} = {};
+      for (const job of limitedJobs) {
+        if (job.userId && !emailMap[job.userId]) {
+          try {
+            const userRef = doc(db, 'users', job.userId);
+            const userDoc = await getDoc(userRef);
+            if (userDoc.exists()) {
+              emailMap[job.userId] = userDoc.data().email || 'Unknown';
+            }
+          } catch (error) {
+            console.warn(`Could not fetch user data for ${job.userId}`);
+            emailMap[job.userId] = 'Unknown';
+          }
+        }
+      }
+      setUserEmails(emailMap);
+
+    } catch (error) {
+      console.error('Error loading pending jobs:', error);
+    } finally {
+      setPendingJobsLoading(false);
+    }
+  }, [userData]);
 
   useEffect(() => {
     // Check if user is admin
@@ -57,7 +121,7 @@ export default function AdminPage() {
 
       try {
         setLoading(true);
-        
+
         // Fetch all users
         const users = await getAllUsers();
         setAllUsers(users);
@@ -71,32 +135,32 @@ export default function AdminPage() {
           orderBy('createdAt', 'desc'),
           limit(3)
         );
-        
+
         const snapshot = await getDocs(recentJobsQuery);
-        const jobs = snapshot.docs.map(doc => {
-          const data = doc.data();
-          
+        const jobs = snapshot.docs.map(docSnap => {
+          const data = docSnap.data();
+
           // Safe date conversion helper
-          const convertToDate = (timestamp) => {
+          const convertToDate = (timestamp: unknown) => {
             if (!timestamp) return null;
-            if (typeof timestamp.toDate === 'function') {
-              return timestamp.toDate();
+            if (typeof (timestamp as { toDate?: () => Date }).toDate === 'function') {
+              return (timestamp as { toDate: () => Date }).toDate();
             }
             if (timestamp instanceof Date) {
               return timestamp;
             }
-            return new Date(timestamp);
+            return new Date(timestamp as string | number);
           };
-          
+
           return {
-            id: doc.id,
+            id: docSnap.id,
             ...data,
             createdAt: convertToDate(data.createdAt),
             updatedAt: convertToDate(data.updatedAt),
             completedAt: convertToDate(data.completedAt)
           };
         });
-        
+
         setRecentJobs(jobs);
 
         // Get all transactions for revenue calculations
@@ -128,34 +192,34 @@ export default function AdminPage() {
         // Get package statistics from Firestore
         const packagesQuery = query(collection(db, 'packages'));
         const packagesSnapshot = await getDocs(packagesQuery);
-        const allPackages = packagesSnapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
+        const allPackages = packagesSnapshot.docs.map(docSnap => ({
+          id: docSnap.id,
+          ...docSnap.data()
         }));
 
-        const activePackagesCount = allPackages.filter(p => p.active).length;
+        const activePackagesCount = allPackages.filter((p: { active?: boolean }) => p.active).length;
         const totalPackagesSold = packagePurchases.length;
 
         // Calculate actual processing times from completed jobs
         const completedJobs = jobs.filter(j => j.status === 'complete' && j.createdAt && j.completedAt);
         let avgProcessingTime = '2.5hrs'; // Default fallback
-        
+
         if (completedJobs.length > 0) {
           const totalProcessingTime = completedJobs.reduce((sum, job) => {
             // Dates are already converted to JavaScript Date objects
             const startTime = job.createdAt;
             const endTime = job.completedAt;
-            
+
             if (startTime && endTime) {
               return sum + (endTime - startTime);
             }
             return sum;
           }, 0);
-          
+
           const avgMilliseconds = totalProcessingTime / completedJobs.length;
           const avgMinutes = avgMilliseconds / (1000 * 60);
           const avgHours = avgMinutes / 60;
-          
+
           // Format based on duration
           if (avgMinutes < 60) {
             avgProcessingTime = `${Math.round(avgMinutes)}min`;
@@ -181,26 +245,6 @@ export default function AdminPage() {
           totalWalletTopups
         });
 
-        // Calculate system health metrics
-        const totalJobs = jobs.length;
-        const failedJobs = jobs.filter(j => j.status === 'failed').length;
-        const queuedJobs = jobs.filter(j => j.status === 'queued' || j.status === 'processing').length;
-        const pendingJobs = jobs.filter(j => j.status === 'pending-review' || j.status === 'pending-transcription').length;
-        
-        const failureRate = totalJobs > 0 ? (failedJobs / totalJobs) * 100 : 0;
-        const queueLoad = queuedJobs + pendingJobs;
-        
-        // Simulate response time calculation (in a real app, this would come from monitoring)
-        const simulatedResponseTime = Math.random() * 100 + 50; // Random between 50-150ms
-        
-        setSystemHealth({
-          apiStatus: failureRate > 10 ? 'degraded' : failureRate > 5 ? 'warning' : 'operational',
-          processingQueue: queueLoad > 20 ? 'high' : queueLoad > 10 ? 'moderate' : 'normal',
-          avgResponseTime: Math.round(simulatedResponseTime),
-          queueLoad,
-          failureRate: Math.round(failureRate * 10) / 10
-        });
-
       } catch (error) {
         console.error('Error loading admin data:', error);
       } finally {
@@ -210,8 +254,9 @@ export default function AdminPage() {
 
     if (!authLoading) {
       loadAdminData();
+      loadPendingJobs();
     }
-  }, [userData, authLoading, router]);
+  }, [userData, authLoading, router, loadPendingJobs]);
 
   // Prevent SSR hydration issues
   const [mounted, setMounted] = useState(false);
@@ -245,6 +290,72 @@ export default function AdminPage() {
           </p>
         </div>
 
+        {/* Your Work - Pending Jobs */}
+        <Card className="mb-8 border-2 border-[#b29dd9] shadow-md">
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <CardTitle className="text-xl font-semibold text-[#003366] flex items-center gap-2">
+                  <FileText className="h-5 w-5" />
+                  Your Work
+                </CardTitle>
+                <p className="text-sm text-gray-600 mt-1">
+                  Jobs waiting for transcription or review
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  onClick={loadPendingJobs}
+                  disabled={pendingJobsLoading}
+                  variant="outline"
+                  size="sm"
+                  className="flex items-center gap-1"
+                >
+                  <RefreshCw className={`h-4 w-4 ${pendingJobsLoading ? 'animate-spin' : ''}`} />
+                  Refresh
+                </Button>
+                <Link href="/admin/queue">
+                  <Button variant="outline" size="sm" className="flex items-center gap-1">
+                    View All
+                    <ArrowRight className="h-4 w-4" />
+                  </Button>
+                </Link>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            {pendingJobsLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <LoadingSpinner size="md" />
+                <span className="ml-2 text-gray-600">Loading pending jobs...</span>
+              </div>
+            ) : pendingJobs.length === 0 ? (
+              <div className="text-center py-8 text-gray-500">
+                <FileText className="h-12 w-12 mx-auto mb-4 text-gray-300" />
+                <p className="text-lg font-medium">No pending jobs</p>
+                <p className="text-sm">You're all caught up! Check back later for new work.</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {pendingJobs.map(job => (
+                  <WorkQueueCard
+                    key={job.id}
+                    job={job}
+                    userEmail={userEmails[job.userId]}
+                    onComplete={loadPendingJobs}
+                  />
+                ))}
+                {pendingJobs.length >= 10 && (
+                  <div className="text-center pt-2">
+                    <Link href="/admin/queue" className="text-sm text-[#003366] hover:underline">
+                      View all jobs in queue →
+                    </Link>
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         {/* Key Metrics - Row 1 */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6 mb-6">
@@ -441,91 +552,6 @@ export default function AdminPage() {
                     </div>
                   </div>
                 ))}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* System Health */}
-        <div className="mt-8 mb-4">
-          <Card className="border-0 shadow-sm">
-            <CardHeader>
-              <CardTitle className="text-lg font-semibold text-[#003366]">
-                System Health
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="text-center">
-                  <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${
-                    systemHealth.apiStatus === 'operational' ? 'bg-green-100' :
-                    systemHealth.apiStatus === 'warning' ? 'bg-yellow-100' : 'bg-red-100'
-                  }`}>
-                    <CheckCircle className={`h-8 w-8 ${
-                      systemHealth.apiStatus === 'operational' ? 'text-green-600' :
-                      systemHealth.apiStatus === 'warning' ? 'text-yellow-600' : 'text-red-600'
-                    }`} />
-                  </div>
-                  <h3 className="font-medium text-[#003366] mb-2">API Status</h3>
-                  <p className={`text-sm ${
-                    systemHealth.apiStatus === 'operational' ? 'text-green-600' :
-                    systemHealth.apiStatus === 'warning' ? 'text-yellow-600' : 'text-red-600'
-                  }`}>
-                    {systemHealth.apiStatus === 'operational' ? 'All systems operational' :
-                     systemHealth.apiStatus === 'warning' ? 'Performance degraded' : 'Service issues'}
-                  </p>
-                  {systemHealth.failureRate > 0 && (
-                    <p className="text-xs text-gray-500 mt-1">
-                      {systemHealth.failureRate}% failure rate
-                    </p>
-                  )}
-                </div>
-
-                <div className="text-center">
-                  <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${
-                    systemHealth.processingQueue === 'normal' ? 'bg-green-100' :
-                    systemHealth.processingQueue === 'moderate' ? 'bg-yellow-100' : 'bg-red-100'
-                  }`}>
-                    <TrendingUp className={`h-8 w-8 ${
-                      systemHealth.processingQueue === 'normal' ? 'text-green-600' :
-                      systemHealth.processingQueue === 'moderate' ? 'text-yellow-600' : 'text-red-600'
-                    }`} />
-                  </div>
-                  <h3 className="font-medium text-[#003366] mb-2">Processing Queue</h3>
-                  <p className={`text-sm ${
-                    systemHealth.processingQueue === 'normal' ? 'text-green-600' :
-                    systemHealth.processingQueue === 'moderate' ? 'text-yellow-600' : 'text-red-600'
-                  }`}>
-                    {systemHealth.processingQueue === 'normal' ? 'Normal load' :
-                     systemHealth.processingQueue === 'moderate' ? 'Moderate load' : 'High load'}
-                  </p>
-                  <p className="text-xs text-gray-500 mt-1">
-                    {systemHealth.queueLoad} jobs in queue
-                  </p>
-                </div>
-
-                <div className="text-center">
-                  <div className={`w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 ${
-                    systemHealth.avgResponseTime < 100 ? 'bg-green-100' :
-                    systemHealth.avgResponseTime < 200 ? 'bg-yellow-100' : 'bg-red-100'
-                  }`}>
-                    <Clock className={`h-8 w-8 ${
-                      systemHealth.avgResponseTime < 100 ? 'text-green-600' :
-                      systemHealth.avgResponseTime < 200 ? 'text-yellow-600' : 'text-red-600'
-                    }`} />
-                  </div>
-                  <h3 className="font-medium text-[#003366] mb-2">Response Time</h3>
-                  <p className={`text-sm ${
-                    systemHealth.avgResponseTime < 100 ? 'text-green-600' :
-                    systemHealth.avgResponseTime < 200 ? 'text-yellow-600' : 'text-red-600'
-                  }`}>
-                    {systemHealth.avgResponseTime}ms average
-                  </p>
-                  <p className="text-xs text-gray-500 mt-1">
-                    {systemHealth.avgResponseTime < 100 ? 'Excellent' :
-                     systemHealth.avgResponseTime < 200 ? 'Good' : 'Needs attention'}
-                  </p>
-                </div>
               </div>
             </CardContent>
           </Card>

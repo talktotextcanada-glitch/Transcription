@@ -65,33 +65,6 @@ textarea::-moz-selection {
 }
 
 /* ============================================
-   Widget positioning (when loaded)
-   ============================================ */
-
-/* AudioEye widget - left side */
-#audioeye-launcher,
-.audioeye-launcher,
-iframe[src*="audioeye"] {
-  left: 20px !important;
-  right: auto !important;
-}
-
-/* Webchat widget - right side */
-#webchat-launcher,
-.webchat-launcher,
-iframe[src*="apigateway"] {
-  right: 20px !important;
-  left: auto !important;
-}
-
-/* ============================================
-   Header z-index
-   ============================================ */
-header {
-  z-index: 9999 !important;
-}
-
-/* ============================================
    Radix UI Portals - above everything
    (dropdowns, selects, toasts, dialogs, etc.)
    ============================================ */

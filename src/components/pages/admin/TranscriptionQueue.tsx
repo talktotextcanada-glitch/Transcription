@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, Filter, Download, CheckCircle, XCircle, Eye, Edit, RefreshCw, Zap } from 'lucide-react';
+import { Search, Filter, Download, CheckCircle, XCircle, Eye, Edit, RefreshCw, Zap, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -172,6 +172,40 @@ export function TranscriptionQueue() {
     }
   };
 
+  // Resubmit a stuck processing job
+  const resubmitStuckJob = async (jobId: string) => {
+    try {
+      toast({
+        title: "Resubmitting job...",
+        description: "Downloading file and submitting to Speechmatics. This may take a few minutes for large files.",
+      });
+
+      const response = await fetch('/api/admin/process-job', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          jobId: jobId,
+          language: 'en',
+          operatingPoint: 'standard'
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to resubmit job');
+      }
+
+      const result = await response.json();
+      console.log('Resubmit result:', result);
+      return result;
+    } catch (error) {
+      console.error('Error resubmitting job:', error);
+      throw error;
+    }
+  };
+
   const handleAction = async (jobId: string, action: string, transcriptText?: string) => {
     setIsLoading(true);
     try {
@@ -216,6 +250,13 @@ export function TranscriptionQueue() {
             description: "Job is now being processed with Speechmatics AI.",
           });
           break;
+        case 'resubmit-stuck':
+          await resubmitStuckJob(jobId);
+          toast({
+            title: "Job Resubmitted",
+            description: "Job has been resubmitted to Speechmatics. It may take a few minutes to complete.",
+          });
+          break;
       }
       
       // Refresh the queue after action
@@ -245,10 +286,13 @@ export function TranscriptionQueue() {
     // - Human mode jobs (except completed/cancelled)
     // - Hybrid mode jobs that need review (pending-review, under-review)
     // - Failed AI/Hybrid jobs that might need retry
+    // - Stuck processing jobs (processing status but no speechmaticsJobId)
+    const isStuckProcessing = item.status === 'processing' && !item.speechmaticsJobId;
     const needsAdminAction = (item.mode === 'human' && !['complete', 'cancelled'].includes(item.status)) ||
                             (item.mode === 'hybrid' && ['pending-review', 'under-review'].includes(item.status)) ||
                             (item.mode === 'ai' && item.status === 'failed') ||
-                            (item.mode === 'hybrid' && item.status === 'failed');
+                            (item.mode === 'hybrid' && item.status === 'failed') ||
+                            isStuckProcessing;
 
     return matchesSearch && matchesStatus && needsAdminAction;
   }).sort((a, b) => {
@@ -453,11 +497,11 @@ export function TranscriptionQueue() {
                           Transcribe
                         </Button>
                       )}
-                      {item.status === 'failed' && 
+                      {item.status === 'failed' &&
                        (item.mode === 'ai' || item.mode === 'hybrid') && (
-                        <Button 
-                          variant="ghost" 
-                          size="sm" 
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           className="text-purple-600"
                           onClick={() => item.id && handleAction(item.id, 'process-with-speechmatics')}
                           disabled={isLoading}
@@ -465,6 +509,20 @@ export function TranscriptionQueue() {
                         >
                           <Zap className="h-4 w-4 mr-1" />
                           Retry AI
+                        </Button>
+                      )}
+                      {item.status === 'processing' && !item.speechmaticsJobId &&
+                       (item.mode === 'ai' || item.mode === 'hybrid') && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="text-orange-600"
+                          onClick={() => item.id && handleAction(item.id, 'resubmit-stuck')}
+                          disabled={isLoading}
+                          title="Resubmit stuck job to Speechmatics"
+                        >
+                          <RotateCcw className="h-4 w-4 mr-1" />
+                          Resubmit
                         </Button>
                       )}
                       <Button 

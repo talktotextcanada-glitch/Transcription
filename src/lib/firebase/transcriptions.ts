@@ -30,6 +30,7 @@ export interface TranscriptionJob {
   transcript?: string;
   timestampedTranscript?: TranscriptSegment[]; // New field for timestamped data
   transcriptStoragePath?: string; // Path to transcript in Storage (for large files)
+  speechmaticsJobId?: string; // Speechmatics job ID for tracking
   segmentCount?: number; // Number of timestamped segments (for large files stored in Storage)
   transcriptLength?: number; // Length of transcript text (for large files stored in Storage)
   createdAt: Timestamp;

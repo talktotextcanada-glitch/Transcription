@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState } from 'react';
-import { Download, CheckCircle, XCircle, Edit, Eye, Music } from 'lucide-react';
+import React, { useState, useRef } from 'react';
+import { Download, CheckCircle, XCircle, Edit, Eye, Music, Upload } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { StatusBadge } from '@/components/ui/StatusBadge';
@@ -17,6 +17,7 @@ import {
   TranscriptionJob
 } from '@/lib/firebase/transcriptions';
 import { formatDuration } from '@/lib/utils';
+import mammoth from 'mammoth';
 
 interface WorkQueueCardProps {
   job: TranscriptionJob;
@@ -30,8 +31,72 @@ export function WorkQueueCard({ job, userEmail, onComplete }: WorkQueueCardProps
   const [isLoading, setIsLoading] = useState(false);
   const [loadingTranscript, setLoadingTranscript] = useState(false);
   const [storageTranscript, setStorageTranscript] = useState<string | null>(null);
+  const [uploadingFile, setUploadingFile] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
   const { refundCredits } = useCredits();
+
+  // Handle file upload
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const fileName = file.name.toLowerCase();
+    const isDocx = fileName.endsWith('.docx');
+    const isTxt = fileName.endsWith('.txt');
+
+    if (!isDocx && !isTxt) {
+      toast({
+        title: "Invalid file type",
+        description: "Please upload a .txt or .docx file.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setUploadingFile(true);
+    try {
+      let text = '';
+
+      if (isTxt) {
+        // Read plain text file
+        text = await file.text();
+      } else if (isDocx) {
+        // Read .docx file using mammoth
+        const arrayBuffer = await file.arrayBuffer();
+        const result = await mammoth.extractRawText({ arrayBuffer });
+        text = result.value;
+      }
+
+      if (text.trim()) {
+        setTranscript(text);
+        setShowModal(true);
+        toast({
+          title: "File loaded",
+          description: `Loaded ${file.name}. Review and submit the transcript.`,
+        });
+      } else {
+        toast({
+          title: "Empty file",
+          description: "The uploaded file appears to be empty.",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error('File upload error:', error);
+      toast({
+        title: "Error reading file",
+        description: "Failed to read the uploaded file. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setUploadingFile(false);
+      // Reset the file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  };
 
   // Fetch transcript from Storage if needed
   const fetchTranscriptFromStorage = async () => {
@@ -256,14 +321,33 @@ export function WorkQueueCard({ job, userEmail, onComplete }: WorkQueueCardProps
           )}
 
           {job.status === 'pending-transcription' && (
-            <Button
-              size="sm"
-              className="bg-[#003366] hover:bg-[#004080] text-white"
-              onClick={openTranscribeModal}
-            >
-              <Edit className="h-4 w-4 mr-1" />
-              Transcribe
-            </Button>
+            <>
+              <Button
+                size="sm"
+                className="bg-[#003366] hover:bg-[#004080] text-white"
+                onClick={openTranscribeModal}
+              >
+                <Edit className="h-4 w-4 mr-1" />
+                Transcribe
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="text-green-600 border-green-300 hover:bg-green-50"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploadingFile}
+              >
+                <Upload className="h-4 w-4 mr-1" />
+                {uploadingFile ? 'Loading...' : 'Upload'}
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".txt,.docx"
+                onChange={handleFileUpload}
+                className="hidden"
+              />
+            </>
           )}
 
           {/* Reject button for both statuses */}
@@ -370,9 +454,31 @@ export function WorkQueueCard({ job, userEmail, onComplete }: WorkQueueCardProps
               {/* Transcript input for human transcription */}
               {job.status === 'pending-transcription' && (
                 <div className="mb-4">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Enter Transcript:
-                  </label>
+                  {/* File upload option */}
+                  <div className="mb-4 p-4 border-2 border-dashed border-gray-300 rounded-lg hover:border-green-400 transition-colors">
+                    <div className="flex items-center justify-center gap-3">
+                      <Upload className="h-5 w-5 text-gray-400" />
+                      <span className="text-sm text-gray-600">
+                        Upload a transcript file (.txt or .docx)
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-green-600 border-green-300 hover:bg-green-50"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={uploadingFile}
+                      >
+                        {uploadingFile ? 'Loading...' : 'Choose File'}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 mb-3">
+                    <div className="flex-1 h-px bg-gray-300"></div>
+                    <span className="text-sm text-gray-500">or type/paste below</span>
+                    <div className="flex-1 h-px bg-gray-300"></div>
+                  </div>
+
                   <Textarea
                     value={transcript}
                     onChange={(e) => setTranscript(e.target.value)}

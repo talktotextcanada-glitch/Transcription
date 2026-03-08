@@ -57,6 +57,10 @@ export interface TranscriptionJob {
   speakerCount?: number; // Number of speakers in the recording
   addOnCost?: number; // Additional cost for add-ons in CAD
   hasPackage?: boolean; // Whether user has active package (add-ons are free)
+  // Template for human transcription
+  templatePath?: string; // Path to template file in Storage
+  templateURL?: string; // Download URL for template file
+  templateFilename?: string; // Original template filename
 }
 
 const TRANSCRIPTIONS_COLLECTION = 'transcriptions';

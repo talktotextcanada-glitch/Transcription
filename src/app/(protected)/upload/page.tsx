@@ -4,7 +4,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import Image from 'next/image';
-import { Upload, FileAudio, FileVideo, X, AlertCircle } from 'lucide-react';
+import { Upload, FileAudio, FileVideo, FileText, X, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
@@ -48,6 +48,9 @@ export default function UploadPage() {
   const [location, setLocation] = useState('');
   const [locationEnabled, setLocationEnabled] = useState(false);
   const [includeFiller, setIncludeFiller] = useState(false);
+
+  // Template file for human transcription
+  const [templateFile, setTemplateFile] = useState<File | null>(null);
 
   // Pricing settings from database
   const [pricingSettings, setPricingSettings] = useState<PricingSettings | null>(null);
@@ -488,6 +491,25 @@ export default function UploadPage() {
           initialStatus = 'processing'; // AI and hybrid modes start processing immediately
         }
 
+        // Upload template file for human transcription (only once for first file)
+        let templateData: { templatePath?: string; templateURL?: string; templateFilename?: string } = {};
+        if (transcriptionMode === 'human' && templateFile && index === 0) {
+          try {
+            const templatePath = generateFilePath(user.uid, `template_${templateFile.name}`);
+            const { uploadFile: uploadFileFunction } = await import('@/lib/firebase/storage');
+            const templateResult = await uploadFileFunction(templateFile, templatePath);
+            templateData = {
+              templatePath: templateResult.fullPath,
+              templateURL: templateResult.downloadURL,
+              templateFilename: templateFile.name
+            };
+            console.log('[Upload] Template uploaded:', templateData);
+          } catch (templateError) {
+            console.error('[Upload] Failed to upload template:', templateError);
+            // Continue without template - not critical
+          }
+        }
+
         const jobData: Omit<TranscriptionJob, 'id' | 'createdAt' | 'updatedAt'> = {
           userId: user.uid,
           filename: result.name,
@@ -511,7 +533,9 @@ export default function UploadPage() {
           multipleSpeakers: (transcriptionMode === 'hybrid' || transcriptionMode === 'human') ? multipleSpeakers : false,
           speakerCount: multipleSpeakers ? speakerCount : 2,
           addOnCost: fileAddOnCost,
-          hasPackage: hasPackage
+          hasPackage: hasPackage,
+          // Template for human transcription
+          ...templateData
         };
 
         // Only add specialInstructions if it has content
@@ -1402,6 +1426,72 @@ export default function UploadPage() {
               />
             </CardContent>
           </Card>
+
+          {/* Template Upload (Human Transcription Only) */}
+          {transcriptionMode === 'human' && (
+            <Card className="border-0 shadow-sm">
+              <CardHeader>
+                <CardTitle className="text-lg font-semibold text-[#003366]">
+                  📄 Document Template (Optional)
+                </CardTitle>
+                <p className="text-sm text-gray-600 mt-2">
+                  Upload a Word document template (letterhead, legal form, etc.) for the transcriber to use
+                </p>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div
+                    className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+                      templateFile ? 'border-green-300 bg-green-50' : 'border-gray-300 hover:border-[#b29dd9]'
+                    }`}
+                  >
+                    {templateFile ? (
+                      <div className="flex items-center justify-center gap-3">
+                        <FileText className="h-8 w-8 text-green-600" />
+                        <div className="text-left">
+                          <p className="font-medium text-gray-900">{templateFile.name}</p>
+                          <p className="text-sm text-gray-500">
+                            {(templateFile.size / 1024).toFixed(1)} KB
+                          </p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setTemplateFile(null)}
+                          className="ml-4 text-red-600 hover:text-red-700 hover:bg-red-50"
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <label className="cursor-pointer">
+                        <input
+                          type="file"
+                          accept=".doc,.docx,.pdf"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              setTemplateFile(file);
+                            }
+                          }}
+                          className="hidden"
+                        />
+                        <div className="space-y-2">
+                          <Upload className="h-8 w-8 mx-auto text-gray-400" />
+                          <p className="text-gray-600">
+                            Click to upload a template
+                          </p>
+                          <p className="text-xs text-gray-400">
+                            Supports: .docx, .doc, .pdf
+                          </p>
+                        </div>
+                      </label>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Cost Summary */}
           <Card className="border-0 shadow-sm">

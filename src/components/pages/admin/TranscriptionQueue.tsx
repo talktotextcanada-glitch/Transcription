@@ -537,9 +537,17 @@ export function TranscriptionQueue() {
                       </Button>
                       {item.downloadURL && (
                         <Button variant="ghost" size="sm" className="text-gray-600">
-                          <a href={item.downloadURL} target="_blank" rel="noopener noreferrer">
+                          <a href={item.downloadURL} target="_blank" rel="noopener noreferrer" className="flex items-center">
                             <Download className="h-4 w-4 mr-1" />
                             Audio
+                          </a>
+                        </Button>
+                      )}
+                      {item.templateURL && (
+                        <Button variant="ghost" size="sm" className="text-purple-600">
+                          <a href={item.templateURL} target="_blank" rel="noopener noreferrer" className="flex items-center">
+                            <Download className="h-4 w-4 mr-1" />
+                            Template
                           </a>
                         </Button>
                       )}
@@ -619,6 +627,24 @@ export function TranscriptionQueue() {
                       src={selectedJob.downloadURL}
                       standalone={true}
                     />
+                  </div>
+                )}
+
+                {/* Template download for human transcription */}
+                {selectedJob.templateURL && (
+                  <div className="mb-4 p-3 bg-purple-50 border border-purple-200 rounded-lg">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-purple-900">📄 Document Template</p>
+                        <p className="text-xs text-purple-700">{selectedJob.templateFilename || 'Template file'}</p>
+                      </div>
+                      <Button variant="outline" size="sm" className="text-purple-600 border-purple-300 hover:bg-purple-100">
+                        <a href={selectedJob.templateURL} target="_blank" rel="noopener noreferrer" className="flex items-center">
+                          <Download className="h-4 w-4 mr-1" />
+                          Download
+                        </a>
+                      </Button>
+                    </div>
                   </div>
                 )}
               </div>

@@ -66,14 +66,12 @@ export default function UserManagementPage() {
         setLoading(true);
         const allUsers = await getAllUsers();
         setUsers(allUsers);
+        setLoading(false);
 
-        // Load package counts for each user
-        const packagesData: Record<string, { total: number; ai: number; hybrid: number; human: number }> = {};
-
-        for (const u of allUsers) {
+        // Load package counts in parallel (non-blocking)
+        const packagePromises = allUsers.map(async (u) => {
+          const userId = u.id || u.uid;
           try {
-            // Use id (document ID) not uid for subcollection access
-            const userId = u.id || u.uid;
             const packagesRef = collection(db, 'users', userId, 'packages');
             const activePackagesQuery = query(packagesRef, where('active', '==', true));
             const snapshot = await getDocs(activePackagesQuery);
@@ -87,14 +85,18 @@ export default function UserManagementPage() {
               else if (pkg.type === 'human') counts.human++;
             });
 
-            packagesData[userId] = counts;
+            return { userId, counts };
           } catch (pkgError) {
-            // If package loading fails for a user, just set empty counts
-            console.warn(`Failed to load packages for user ${u.id}:`, pkgError);
-            packagesData[u.id || u.uid] = { total: 0, ai: 0, hybrid: 0, human: 0 };
+            console.warn(`Failed to load packages for user ${userId}:`, pkgError);
+            return { userId, counts: { total: 0, ai: 0, hybrid: 0, human: 0 } };
           }
-        }
+        });
 
+        const results = await Promise.all(packagePromises);
+        const packagesData: Record<string, { total: number; ai: number; hybrid: number; human: number }> = {};
+        for (const { userId, counts } of results) {
+          packagesData[userId] = counts;
+        }
         setUserPackages(packagesData);
       } catch (error) {
         console.error('Error loading users:', error);
@@ -103,7 +105,6 @@ export default function UserManagementPage() {
           description: "Please try again or contact support.",
           variant: "destructive",
         });
-      } finally {
         setLoading(false);
       }
     };
@@ -290,7 +291,7 @@ export default function UserManagementPage() {
 
   const filteredUsers = users.filter(user => {
     const matchesSearch = (user.name || '').toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         user.email.toLowerCase().includes(searchTerm.toLowerCase());
+                         (user.email || '').toLowerCase().includes(searchTerm.toLowerCase());
     const matchesRole = filterRole === 'all' || user.role === filterRole;
     const matchesFreeTrial = filterFreeTrial === 'all' ||
       (filterFreeTrial === 'active' && user.freeTrialActive) ||

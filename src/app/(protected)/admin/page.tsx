@@ -120,21 +120,22 @@ export default function AdminPage() {
       const limitedJobs = actionableJobs.slice(0, 10);
       setPendingJobs(limitedJobs);
 
-      // Fetch user emails for these jobs
-      const emailMap: {[key: string]: string} = {};
-      for (const job of limitedJobs) {
-        if (job.userId && !emailMap[job.userId]) {
+      // Fetch user emails for these jobs in parallel
+      const uniqueUserIds = [...new Set(limitedJobs.map(j => j.userId).filter(Boolean))];
+      const emailResults = await Promise.all(
+        uniqueUserIds.map(async (uid) => {
           try {
-            const userRef = doc(db, 'users', job.userId);
+            const userRef = doc(db, 'users', uid);
             const userDoc = await getDoc(userRef);
-            if (userDoc.exists()) {
-              emailMap[job.userId] = userDoc.data().email || 'Unknown';
-            }
-          } catch (error) {
-            console.warn(`Could not fetch user data for ${job.userId}`);
-            emailMap[job.userId] = 'Unknown';
+            return { uid, email: userDoc.exists() ? (userDoc.data().email || 'Unknown') : 'Unknown' };
+          } catch {
+            return { uid, email: 'Unknown' };
           }
-        }
+        })
+      );
+      const emailMap: {[key: string]: string} = {};
+      for (const { uid, email } of emailResults) {
+        emailMap[uid] = email;
       }
       setUserEmails(emailMap);
 

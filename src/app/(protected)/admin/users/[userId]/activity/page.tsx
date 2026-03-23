@@ -81,32 +81,26 @@ export default function UserActivityPage() {
         const user = { id: userDoc.id, ...userDoc.data() } as UserData;
         setUserData(user);
 
-        // Load transactions
-        const transactionsRef = collection(db, 'transactions');
-        const transactionsQuery = query(
-          transactionsRef,
-          where('userId', '==', userId),
-          orderBy('createdAt', 'desc')
-        );
-        const transactionsSnapshot = await getDocs(transactionsQuery);
-        const userTransactions = transactionsSnapshot.docs.map(doc => ({
+        // Load transactions, transcriptions, and packages in parallel
+        const [transactionsSnapshot, userTranscriptions, packagesSnapshot] = await Promise.all([
+          getDocs(query(
+            collection(db, 'transactions'),
+            where('userId', '==', userId),
+            orderBy('createdAt', 'desc')
+          )),
+          getTranscriptionsByUser(userId),
+          getDocs(collection(db, 'users', userId, 'packages')),
+        ]);
+
+        setTransactions(transactionsSnapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data(),
-        } as CreditTransaction));
-        setTransactions(userTransactions);
-
-        // Load transcriptions
-        const userTranscriptions = await getTranscriptionsByUser(userId);
+        } as CreditTransaction)));
         setTranscriptions(userTranscriptions);
-
-        // Load packages
-        const packagesRef = collection(db, 'users', userId, 'packages');
-        const packagesSnapshot = await getDocs(packagesRef);
-        const userPackages = packagesSnapshot.docs.map(doc => ({
+        setPackages(packagesSnapshot.docs.map(doc => ({
           id: doc.id,
           ...doc.data(),
-        } as UserPackage));
-        setPackages(userPackages);
+        } as UserPackage)));
 
       } catch (error) {
         console.error('Error loading user activity:', error);

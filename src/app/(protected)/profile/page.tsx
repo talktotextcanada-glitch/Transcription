@@ -1,7 +1,7 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
-import { User, Mail, Phone, MapPin, Building, Save } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { User, Mail, Phone, MapPin, Building, Save, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -14,9 +14,13 @@ import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import { useAuth } from '@/contexts/AuthContext';
 
 export default function ProfilePage() {
-  const { user, userData, updateUserData } = useAuth();
+  const { user, userData, updateUserData, signOut } = useAuth();
   const { toast } = useToast();
   const [isUpdating, setIsUpdating] = useState(false);
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [isDeleting, setIsDeleting] = useState(false);
+  const deleteInputRef = useRef<HTMLInputElement>(null);
   
   const [formData, setFormData] = useState({
     name: '',
@@ -87,12 +91,43 @@ export default function ProfilePage() {
     });
   };
 
-  const handleDeleteAccount = () => {
-    toast({
-      title: "Feature not available", 
-      description: "Account deletion will be available in a future update.",
-      variant: "destructive",
-    });
+  const handleDeleteAccount = async () => {
+    if (deleteConfirmText !== 'DELETE') return;
+    if (!user) return;
+
+    setIsDeleting(true);
+    try {
+      const token = await user.getIdToken();
+      const response = await fetch(`/api/admin/users/${user.uid}/delete`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to delete account');
+      }
+
+      toast({
+        title: "Account deleted",
+        description: "Your account and all associated data have been permanently deleted.",
+      });
+
+      await signOut();
+    } catch (error) {
+      console.error('Account deletion error:', error);
+      toast({
+        title: "Deletion failed",
+        description: error instanceof Error ? error.message : "Please try again or contact support.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsDeleting(false);
+      setShowDeleteModal(false);
+      setDeleteConfirmText('');
+    }
   };
 
   const handleEmailNotifications = () => {
@@ -338,7 +373,7 @@ export default function ProfilePage() {
                       Permanently delete your account and all data
                     </p>
                   </div>
-                  <Button variant="outline" size="sm" className="border-red-300 text-red-700 hover:bg-red-100" onClick={handleDeleteAccount}>
+                  <Button variant="outline" size="sm" className="border-red-300 text-red-700 hover:bg-red-100" onClick={() => setShowDeleteModal(true)}>
                     Delete Account
                   </Button>
                 </div>
@@ -347,6 +382,80 @@ export default function ProfilePage() {
           </Card>
         </div>
       </div>
+
+      {/* Delete Account Confirmation Modal */}
+      {showDeleteModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg max-w-md w-full">
+            <div className="p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                  <AlertTriangle className="h-5 w-5 text-red-600" />
+                </div>
+                <h3 className="text-lg font-semibold text-red-800">
+                  Delete Account
+                </h3>
+              </div>
+
+              <div className="space-y-3 mb-6">
+                <p className="text-sm text-gray-700">
+                  This action is <strong>permanent and cannot be undone</strong>. Deleting your account will:
+                </p>
+                <ul className="text-sm text-gray-600 list-disc list-inside space-y-1">
+                  <li>Remove your profile and all personal data</li>
+                  <li>Delete all your transcriptions and uploaded files</li>
+                  <li>Remove your transaction and billing history</li>
+                  <li>Forfeit any remaining wallet balance or credits</li>
+                </ul>
+              </div>
+
+              <div className="mb-6">
+                <Label htmlFor="deleteConfirm" className="text-sm font-medium text-gray-700">
+                  Type <strong>DELETE</strong> to confirm
+                </Label>
+                <Input
+                  ref={deleteInputRef}
+                  id="deleteConfirm"
+                  type="text"
+                  value={deleteConfirmText}
+                  onChange={(e) => setDeleteConfirmText(e.target.value)}
+                  placeholder="DELETE"
+                  className="mt-1"
+                  autoFocus
+                />
+              </div>
+
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setShowDeleteModal(false);
+                    setDeleteConfirmText('');
+                  }}
+                  disabled={isDeleting}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleDeleteAccount}
+                  disabled={isDeleting || deleteConfirmText !== 'DELETE'}
+                  className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+                >
+                  {isDeleting ? (
+                    <>
+                      <LoadingSpinner size="sm" className="mr-2" />
+                      Deleting...
+                    </>
+                  ) : (
+                    'Delete My Account'
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <Footer />
     </div>

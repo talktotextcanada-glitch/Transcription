@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from 'react';
-import { Search, Filter, MoreHorizontal, Mail, Ban, Coins, XCircle, Star, Package, Clock, TrendingUp } from 'lucide-react';
+import { Search, Filter, MoreHorizontal, Mail, Ban, Coins, XCircle, Star, Package, Clock, TrendingUp, Trash2, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -46,6 +46,11 @@ export default function UserManagementPage() {
   const [freeTrialModalUser, setFreeTrialModalUser] = useState<UserData | null>(null);
   const [freeTrialMinutes, setFreeTrialMinutes] = useState('');
   const [freeTrialReason, setFreeTrialReason] = useState('');
+
+  // Delete user modal
+  const [deleteModalUser, setDeleteModalUser] = useState<UserData | null>(null);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     // Check if user is admin
@@ -239,6 +244,47 @@ export default function UserManagementPage() {
       });
     } finally {
       setUpdating(false);
+    }
+  };
+
+  const handleDeleteUser = async () => {
+    if (!deleteModalUser || deleteConfirmText !== 'DELETE') return;
+    const userId = deleteModalUser.id || deleteModalUser.uid;
+
+    setDeleting(true);
+    try {
+      const token = await user?.getIdToken();
+      const response = await fetch(`/api/admin/users/${userId}/delete`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Failed to delete user');
+      }
+
+      // Remove user from local state
+      setUsers(prevUsers => prevUsers.filter(u => (u.id || u.uid) !== userId));
+
+      toast({
+        title: "User deleted",
+        description: `${deleteModalUser.email} has been permanently deleted.`,
+      });
+
+      setDeleteModalUser(null);
+      setDeleteConfirmText('');
+    } catch (error) {
+      console.error('Error deleting user:', error);
+      toast({
+        title: "Error",
+        description: error instanceof Error ? error.message : 'Failed to delete user',
+        variant: "destructive",
+      });
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -507,6 +553,17 @@ export default function UserManagementPage() {
                               <Ban className="mr-2 h-4 w-4" />
                               Suspend User
                             </DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="text-red-600"
+                              onClick={() => {
+                                setDeleteModalUser(user);
+                                setDeleteConfirmText('');
+                              }}
+                              disabled={user.role === 'admin'}
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Delete User
+                            </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
                       </td>
@@ -769,6 +826,94 @@ export default function UserManagementPage() {
                     </>
                   ) : (
                     'Update Free Trial'
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete User Confirmation Modal */}
+      {deleteModalUser && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg max-w-md w-full">
+            <div className="p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
+                  <AlertTriangle className="h-5 w-5 text-red-600" />
+                </div>
+                <h3 className="text-lg font-semibold text-red-800">
+                  Delete User Account
+                </h3>
+              </div>
+
+              <div className="mb-4 space-y-2 p-3 bg-gray-50 rounded">
+                <div className="text-sm text-gray-600">
+                  <strong>User:</strong> {deleteModalUser.name || 'Unnamed User'}
+                </div>
+                <div className="text-sm text-gray-600">
+                  <strong>Email:</strong> {deleteModalUser.email}
+                </div>
+                <div className="text-sm text-gray-600">
+                  <strong>Wallet Balance:</strong> CA${(deleteModalUser.walletBalance || 0).toFixed(2)}
+                </div>
+                <div className="text-sm text-gray-600">
+                  <strong>Total Jobs:</strong> {deleteModalUser.totalJobs || 0}
+                </div>
+              </div>
+
+              <div className="space-y-3 mb-6">
+                <p className="text-sm text-gray-700">
+                  This action is <strong>permanent and cannot be undone</strong>. This will delete:
+                </p>
+                <ul className="text-sm text-gray-600 list-disc list-inside space-y-1">
+                  <li>User profile and authentication</li>
+                  <li>All transcriptions and uploaded files</li>
+                  <li>Transaction and billing history</li>
+                  <li>All associated data</li>
+                </ul>
+              </div>
+
+              <div className="mb-6">
+                <Label htmlFor="adminDeleteConfirm" className="text-sm font-medium text-gray-700">
+                  Type <strong>DELETE</strong> to confirm
+                </Label>
+                <Input
+                  id="adminDeleteConfirm"
+                  type="text"
+                  value={deleteConfirmText}
+                  onChange={(e) => setDeleteConfirmText(e.target.value)}
+                  placeholder="DELETE"
+                  className="mt-1"
+                  autoFocus
+                />
+              </div>
+
+              <div className="flex gap-3">
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    setDeleteModalUser(null);
+                    setDeleteConfirmText('');
+                  }}
+                  disabled={deleting}
+                  className="flex-1"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={handleDeleteUser}
+                  disabled={deleting || deleteConfirmText !== 'DELETE'}
+                  className="flex-1 bg-red-600 hover:bg-red-700 text-white"
+                >
+                  {deleting ? (
+                    <>
+                      <LoadingSpinner size="sm" className="mr-2" />
+                      Deleting...
+                    </>
+                  ) : (
+                    'Delete User'
                   )}
                 </Button>
               </div>

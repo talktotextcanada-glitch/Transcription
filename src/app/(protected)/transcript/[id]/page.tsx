@@ -2091,8 +2091,8 @@ export default function TranscriptViewerPage() {
           </div>
         </div>
 
-        {/* Sticky Action Toolbar */}
-        <div className="sticky top-0 z-40 -mx-4 px-4 py-3 bg-gray-50/95 backdrop-blur-sm border-b border-gray-200/80 mb-6">
+        {/* Sticky Action Toolbar - top-16 to sit below the h-16 sticky header */}
+        <div className="sticky top-16 z-40 -mx-4 px-4 py-3 bg-gray-50/95 backdrop-blur-sm border-b border-gray-200/80 mb-6">
           <div className="flex flex-wrap items-center gap-2">
             {/* Only show edit button for completed transcriptions */}
             {transcription.status === 'complete' && (

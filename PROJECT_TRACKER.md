@@ -12,7 +12,9 @@ Firebase-powered Next.js transcription platform with role-based auth, Stripe pay
 - [ ] Production deployment tuning (APP_URL localhost warning in build)
 
 ## Recently Completed
-- [x] Sticky floating toolbar on transcript viewer — Edit/Share/Export buttons stay visible while scrolling long transcripts (2026-03-28)
+- [x] SRT and VTT subtitle export — download transcripts as subtitle files from the format dropdown (2026-03-28)
+- [x] Sticky floating toolbar on transcript viewer — Edit/Share/Export/Speaker controls stay visible while scrolling long transcripts (2026-03-28)
+- [x] Moved build-time dependencies (typescript, tailwindcss, postcss) to dependencies for Vercel compatibility (2026-03-28)
 - [x] Fix long filename overflow on transcriptions page — added min-w-0 for proper truncation (2026-03-23)
 - [x] Add transcription deletion for users — trash icon per row, confirmation modal, cleans up Firestore + Storage (2026-03-23)
 - [x] Replace Vercel favicon with TTT brand emblem, white background for dark mode (2026-03-23)
@@ -34,6 +36,8 @@ Firebase-powered Next.js transcription platform with role-based auth, Stripe pay
 - None
 
 ## Key Decisions
+- (2026-03-28) Subtitle export (SRT/VTT) includes speaker name prefixes and respects edited segment text; generated client-side via Blob download
+- (2026-03-28) Sticky toolbar has two rows: action buttons (Edit/Share/Export/Search) + speaker controls (timestamp freq, speaker pills, highlight, edit speakers)
 - (2026-03-23) Account deletion removes Firebase Auth + Firestore user doc + subcollections + transcriptions + transactions + storage files; admins cannot delete other admin accounts without removing role first
 - (2026-03-23) Transcription deletion cleans up both Firestore document and all associated storage files (audio, transcript, template)
 - (2026-03-23) Re-registration allowed after account deletion (email becomes available again); no blocklist mechanism added

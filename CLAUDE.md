@@ -139,10 +139,16 @@ SPEECHMATICS_API_URL=https://asr.api.speechmatics.com/v2
 
 ## 🎵 File Processing
 
-### Supported Formats
+### Supported Upload Formats
 - **Audio**: MP3, WAV, M4A, FLAC
 - **Video**: MP4, MOV, AVI (audio extraction)
 - **Size limit**: 1GB per file
+
+### Export Formats
+- **PDF** - Professional formatted transcript document
+- **DOCX** - Word document with speaker labels and timestamps
+- **SRT** - SubRip subtitle format (YouTube, VLC, Premiere, etc.)
+- **VTT** - WebVTT subtitle format (HTML5 video, web players)
 
 ### Upload Flow
 1. Files uploaded to Firebase Storage at `/transcriptions/{userId}/`

@@ -1350,163 +1350,6 @@ export default function TranscriptViewerPage() {
 
     return (
       <div className="space-y-4">
-        {/* Timestamp Frequency Control */}
-        <div className="bg-blue-50 rounded-lg p-4 border border-blue-200 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Clock className="h-4 w-4 text-blue-600" />
-            <span className="text-sm font-medium text-blue-800">Timestamp Frequency:</span>
-          </div>
-          <select
-            value={timestampFrequency}
-            onChange={(e) => setTimestampFrequency(Number(e.target.value) as 30 | 60 | 300)}
-            className="border border-blue-300 rounded-md px-3 py-1 text-sm bg-white hover:bg-gray-50 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-          >
-            <option value={30}>Every 30 seconds</option>
-            <option value={60}>Every 60 seconds</option>
-            <option value={300}>Every 5 minutes</option>
-          </select>
-        </div>
-
-        {/* Speaker Legend */}
-        {(identifiedSpeakers.length > 0 || hasUnknownSpeakers) && (
-          <div className="bg-gray-50 rounded-lg p-4 border">
-            <div className="flex items-center justify-between mb-2">
-              <h4 className="text-sm font-semibold text-gray-700">
-                🎤 Speaker Detection Results
-              </h4>
-              <div className="flex items-center gap-3">
-                {isEditingSpeakerSegments ? (
-                  <Button
-                    onClick={saveSpeakerSegmentChanges}
-                    disabled={saving}
-                    size="sm"
-                    className="bg-green-600 text-white hover:bg-green-700"
-                  >
-                    {saving ? (
-                      <>
-                        <LoadingSpinner size="sm" className="mr-2" />
-                        Saving...
-                      </>
-                    ) : (
-                      <>
-                        <Save className="h-3 w-3 mr-1" />
-                        Save Changes
-                      </>
-                    )}
-                  </Button>
-                ) : (
-                  <Button
-                    onClick={() => setIsEditingSpeakerSegments(true)}
-                    size="sm"
-                    variant="outline"
-                    className="border-blue-300 text-blue-700 hover:bg-blue-50"
-                  >
-                    <Edit3 className="h-3 w-3 mr-1" />
-                    Edit Speakers
-                  </Button>
-                )}
-                {isEditingSpeakerSegments && (
-                  <Button
-                    onClick={() => {
-                      setIsEditingSpeakerSegments(false);
-                      loadTranscription(); // Reload to discard changes
-                    }}
-                    size="sm"
-                    variant="outline"
-                  >
-                    Cancel
-                  </Button>
-                )}
-                {highlightedSpeakers.size > 0 && (
-                  <Button
-                    onClick={clearHighlightedSpeakers}
-                    size="sm"
-                    variant="outline"
-                    className="border-gray-300 text-gray-600 hover:bg-gray-100 text-xs"
-                  >
-                    <EyeOff className="h-3 w-3 mr-1" />
-                    Clear filters
-                  </Button>
-                )}
-                <p className="text-xs text-gray-500 italic">
-                  Click to edit names • Drag to reorder
-                </p>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {orderedSpeakers.map(speaker => (
-                <div
-                  key={speaker}
-                  className="relative group flex items-center gap-1"
-                  draggable={editingSpeaker !== speaker}
-                  onDragStart={(e) => handleDragStart(e, speaker)}
-                  onDragOver={handleDragOver}
-                  onDrop={(e) => handleDrop(e, speaker)}
-                  onDragEnd={handleDragEnd}
-                >
-                  {editingSpeaker === speaker ? (
-                    <input
-                      type="text"
-                      autoFocus
-                      defaultValue={getSpeakerDisplayName(speaker)}
-                      onBlur={(e) => {
-                        const newName = e.target.value.trim();
-                        if (newName) {
-                          updateSpeakerName(speaker, newName);
-                        } else {
-                          setEditingSpeaker(null);
-                        }
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          const newName = e.currentTarget.value.trim();
-                          if (newName) {
-                            updateSpeakerName(speaker, newName);
-                          } else {
-                            setEditingSpeaker(null);
-                          }
-                        } else if (e.key === 'Escape') {
-                          setEditingSpeaker(null);
-                        }
-                      }}
-                      className={`px-3 py-1 rounded-full text-xs font-semibold ${getSpeakerColor(speaker)} border-2 border-blue-500 outline-none min-w-[100px]`}
-                    />
-                  ) : (
-                    <button
-                      onClick={() => setEditingSpeaker(speaker)}
-                      className={`px-3 py-1 rounded-full text-xs font-semibold ${getSpeakerColor(speaker)} hover:ring-2 hover:ring-blue-400 transition-all ${draggedSpeaker === speaker ? 'opacity-50' : 'opacity-100'} ${editingSpeaker !== speaker ? 'cursor-move' : 'cursor-text'} ${highlightedSpeakers.has(speaker) ? 'ring-2 ring-offset-1 ring-blue-500' : ''}`}
-                      title="Click to edit • Drag to reorder"
-                    >
-                      {getSpeakerDisplayName(speaker)}
-                      <Edit3 className="inline-block ml-1 h-3 w-3 opacity-0 group-hover:opacity-100 transition-opacity" />
-                    </button>
-                  )}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleHighlightSpeaker(speaker);
-                    }}
-                    className={`p-1 rounded-full transition-all ${highlightedSpeakers.has(speaker) ? 'bg-blue-100 text-blue-600' : 'text-gray-400 hover:text-gray-600 hover:bg-gray-100'}`}
-                    title={highlightedSpeakers.has(speaker) ? 'Remove highlight' : 'Highlight this speaker'}
-                  >
-                    <Eye className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))}
-              {hasUnknownSpeakers && (
-                <div className={`px-3 py-1 rounded-full text-xs font-semibold ${getSpeakerColor('UU')}`}>
-                  Unidentified Speech
-                </div>
-              )}
-            </div>
-            {identifiedSpeakers.length === 0 && hasUnknownSpeakers && (
-              <p className="text-xs text-gray-600 mt-2">
-                ℹ️ Speaker identification was not possible for this audio. This may be due to audio quality, single speaker, or processing limitations.
-              </p>
-            )}
-          </div>
-        )}
-
         {/* Transcript with Intelligent Paragraphs and Inline Timestamps */}
         <div className="space-y-6">
           {isEditingSpeakerSegments ? (
@@ -2201,12 +2044,117 @@ export default function TranscriptViewerPage() {
               </Button>
             )}
           </div>
+
+          {/* Speaker controls row */}
+          {transcription.timestampedTranscript && transcription.timestampedTranscript.length > 0 && orderedSpeakers.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2 mt-2 pt-2 border-t border-gray-200/60">
+              {/* Timestamp frequency */}
+              <div className="flex items-center gap-1.5 mr-2">
+                <Clock className="h-3.5 w-3.5 text-blue-600" />
+                <select
+                  value={timestampFrequency}
+                  onChange={(e) => setTimestampFrequency(Number(e.target.value) as 30 | 60 | 300)}
+                  className="border border-gray-300 rounded-md px-2 py-1 text-xs bg-white hover:bg-gray-50 focus:ring-1 focus:ring-blue-500"
+                >
+                  <option value={30}>30s</option>
+                  <option value={60}>60s</option>
+                  <option value={300}>5m</option>
+                </select>
+              </div>
+
+              <div className="h-4 w-px bg-gray-300 mr-1" />
+
+              {/* Speaker pills with highlight toggles */}
+              {orderedSpeakers.map(speaker => (
+                <div key={speaker} className="flex items-center gap-0.5">
+                  {editingSpeaker === speaker ? (
+                    <input
+                      type="text"
+                      autoFocus
+                      defaultValue={getSpeakerDisplayName(speaker)}
+                      onBlur={(e) => {
+                        const newName = e.target.value.trim();
+                        if (newName) updateSpeakerName(speaker, newName);
+                        else setEditingSpeaker(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const newName = e.currentTarget.value.trim();
+                          if (newName) updateSpeakerName(speaker, newName);
+                          else setEditingSpeaker(null);
+                        } else if (e.key === 'Escape') setEditingSpeaker(null);
+                      }}
+                      className={`px-2 py-0.5 rounded-full text-xs font-semibold ${getSpeakerColor(speaker)} border-2 border-blue-500 outline-none min-w-[80px]`}
+                    />
+                  ) : (
+                    <button
+                      onClick={() => setEditingSpeaker(speaker)}
+                      className={`px-2 py-0.5 rounded-full text-xs font-semibold ${getSpeakerColor(speaker)} hover:ring-2 hover:ring-blue-400 transition-all ${highlightedSpeakers.has(speaker) ? 'ring-2 ring-offset-1 ring-blue-500' : ''}`}
+                      title="Click to rename"
+                    >
+                      {getSpeakerDisplayName(speaker)}
+                    </button>
+                  )}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleHighlightSpeaker(speaker); }}
+                    className={`p-0.5 rounded-full transition-all ${highlightedSpeakers.has(speaker) ? 'bg-blue-100 text-blue-600' : 'text-gray-400 hover:text-gray-600'}`}
+                    title={highlightedSpeakers.has(speaker) ? 'Remove highlight' : 'Highlight speaker'}
+                  >
+                    <Eye className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+
+              {highlightedSpeakers.size > 0 && (
+                <button
+                  onClick={clearHighlightedSpeakers}
+                  className="text-xs text-gray-500 hover:text-gray-700 underline ml-1"
+                >
+                  Clear filters
+                </button>
+              )}
+
+              <div className="h-4 w-px bg-gray-300 mx-1" />
+
+              {/* Edit speakers button */}
+              {isEditingSpeakerSegments ? (
+                <>
+                  <Button
+                    onClick={saveSpeakerSegmentChanges}
+                    disabled={saving}
+                    size="sm"
+                    className="bg-green-600 text-white hover:bg-green-700 h-7 text-xs"
+                  >
+                    {saving ? <><LoadingSpinner size="sm" className="mr-1" />Saving...</> : <><Save className="h-3 w-3 mr-1" />Save Speakers</>}
+                  </Button>
+                  <Button
+                    onClick={() => { setIsEditingSpeakerSegments(false); loadTranscription(); }}
+                    size="sm"
+                    variant="outline"
+                    className="h-7 text-xs"
+                  >
+                    Cancel
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  onClick={() => setIsEditingSpeakerSegments(true)}
+                  size="sm"
+                  variant="outline"
+                  className="border-blue-300 text-blue-700 hover:bg-blue-50 h-7 text-xs"
+                >
+                  <Edit3 className="h-3 w-3 mr-1" />
+                  Edit Speakers
+                </Button>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4 lg:gap-6">
           {/* Audio Player Section */}
           <div className="lg:col-span-1">
-            <div className="sticky top-[8.5rem] z-30 space-y-4">
+            <div className="sticky top-[11rem] z-30 space-y-4">
               <Card>
                 <CardHeader>
                   <CardTitle className="text-lg text-[#003366]">Audio Player</CardTitle>

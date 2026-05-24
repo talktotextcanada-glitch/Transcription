@@ -487,7 +487,7 @@ export function UserDashboard() {
                           <span>{Math.ceil(job.duration / 60)} min</span>
 
                           <span>
-                            {new Date(job.createdAt).toLocaleDateString()}
+                            {job.createdAt?.toDate?.()?.toLocaleDateString() ?? ''}
                           </span>
                           
                           <span className="text-[#003366] font-medium">CA${((job.creditsUsed || 0) / 100).toFixed(2)}</span>

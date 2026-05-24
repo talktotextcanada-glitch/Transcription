@@ -14,7 +14,7 @@ import { usePackages } from '@/contexts/PackageContext';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { TranscriptionJob } from '@/lib/firebase/transcriptions';
-import { collection, getDocs, query, orderBy, getFirestore, where, doc, getDoc } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy, limit, getFirestore, where, doc, getDoc } from 'firebase/firestore';
 
 export default function AdminPage() {
   const { userData, loading: authLoading } = useAuth();
@@ -173,7 +173,8 @@ export default function AdminPage() {
           getAllUsers(),
           getDocs(query(
             collection(db, 'transcriptions'),
-            orderBy('createdAt', 'desc')
+            orderBy('createdAt', 'desc'),
+            limit(50)
           )),
           getAllTransactions(),
           getDocs(query(collection(db, 'packages'))),

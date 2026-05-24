@@ -16,27 +16,13 @@ export interface TranscriptTemplateData {
   timestampedTranscript?: TranscriptSegment[]; // New field for timestamped data
 }
 
-// Helper function to fetch and convert image to base64 for embedding in DOCX
-async function fetchImageAsBase64(imagePath: string): Promise<string> {
+async function fetchLogoAsArrayBuffer(imagePath: string): Promise<ArrayBuffer | null> {
   try {
     const response = await fetch(imagePath);
-    if (!response.ok) {
-      console.warn(`Failed to fetch image from ${imagePath}`);
-      return '';
-    }
-    const blob = await response.blob();
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        const base64 = reader.result as string;
-        resolve(base64);
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(blob);
-    });
-  } catch (error) {
-    console.warn(`Error loading image ${imagePath}:`, error);
-    return '';
+    if (!response.ok) return null;
+    return await response.arrayBuffer();
+  } catch {
+    return null;
   }
 }
 
@@ -579,13 +565,7 @@ function generateDocxTranscriptContent(templateData: TranscriptTemplateData, opt
 }
 
 export async function exportTranscriptDOCX(templateData: TranscriptTemplateData, options?: ExportOptions): Promise<void> {
-  // Fetch logo for header
-  let logoBase64 = '';
-  try {
-    logoBase64 = await fetchImageAsBase64('/images/logo.png');
-  } catch (error) {
-    console.warn('Failed to load logo:', error);
-  }
+  const logoData = await fetchLogoAsArrayBuffer('/images/logo.png');
 
   const doc = new Document({
     sections: [
@@ -595,14 +575,14 @@ export async function exportTranscriptDOCX(templateData: TranscriptTemplateData,
             children: [
               // Logo-only professional header
               new Paragraph({
-                children: logoBase64 ? [
+                children: logoData ? [
                   new ImageRun({
-                    data: logoBase64,
+                    data: logoData,
                     transformation: {
                       width: 110, // ~1.15 inches at 96 DPI
                       height: 35,
                     },
-                    type: 'base64',
+                    type: 'png',
                   }),
                 ] : [new TextRun('')],
                 alignment: AlignmentType.LEFT,

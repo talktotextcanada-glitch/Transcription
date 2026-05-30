@@ -76,6 +76,9 @@ export default function TranscriptViewerPage() {
   const [speakerNames, setSpeakerNames] = useState<Record<string, string>>({});
   const [editingSpeaker, setEditingSpeaker] = useState<string | null>(null);
   const [speakerOrder, setSpeakerOrder] = useState<string[]>([]);
+  const [showSpeakerLabels, setShowSpeakerLabels] = useState(true);
+  const [mergeSourceSpeaker, setMergeSourceSpeaker] = useState<string>('');
+  const [mergeTargetSpeaker, setMergeTargetSpeaker] = useState<string>('');
   const [draggedSpeaker, setDraggedSpeaker] = useState<string | null>(null);
   const [isEditingSpeakerSegments, setIsEditingSpeakerSegments] = useState(false);
   const [highlightedSpeakers, setHighlightedSpeakers] = useState<Set<string>>(new Set());
@@ -95,6 +98,7 @@ export default function TranscriptViewerPage() {
   const [caseSensitive, setCaseSensitive] = useState(false);
 
   const audioPlayerRef = useRef<AudioPlayerRef>(null);
+  const contentEditableRefs = useRef<Record<number, HTMLDivElement | null>>({});
 
   useEffect(() => {
     if (id && user) {
@@ -258,6 +262,55 @@ export default function TranscriptViewerPage() {
     const text = extractPlainText(transcript);
     return text ? text.trim().split(/\s+/).filter(word => word.length > 0).length : 0;
   };
+
+  useEffect(() => {
+    if (!transcription?.timestampedTranscript || transcription.timestampedTranscript.length === 0) return;
+
+    const speakers = Array.from(new Set(
+      transcription.timestampedTranscript
+        .map(segment => segment.speaker)
+        .filter((speaker): speaker is string => Boolean(speaker) && speaker !== 'UU')
+    )).sort();
+
+    if (speakerOrder.length === 0 && speakers.length > 0) {
+      setSpeakerOrder(speakers);
+    }
+  }, [transcription?.timestampedTranscript, speakerOrder.length]);
+
+  const mergeSpeakers = (sourceSpeaker: string, targetSpeaker: string) => {
+    if (!transcription || !transcription.timestampedTranscript) return;
+    if (!sourceSpeaker || !targetSpeaker || sourceSpeaker === targetSpeaker) return;
+
+    const updatedTranscript = transcription.timestampedTranscript.map((segment) => ({
+      ...segment,
+      speaker: segment.speaker === sourceSpeaker ? targetSpeaker : segment.speaker
+    }));
+
+    const updatedSpeakerNames = { ...speakerNames };
+    if (updatedSpeakerNames[sourceSpeaker]) {
+      if (!updatedSpeakerNames[targetSpeaker]) {
+        updatedSpeakerNames[targetSpeaker] = updatedSpeakerNames[sourceSpeaker];
+      }
+      delete updatedSpeakerNames[sourceSpeaker];
+    }
+
+    const updatedOrder = speakerOrder.filter((speaker) => speaker !== sourceSpeaker);
+
+    setTranscription({
+      ...transcription,
+      timestampedTranscript: updatedTranscript
+    });
+    setSpeakerNames(updatedSpeakerNames);
+    setSpeakerOrder(updatedOrder);
+    setMergeSourceSpeaker('');
+    setMergeTargetSpeaker('');
+
+    toast({
+      title: 'Speakers merged',
+      description: `${getSpeakerDisplayName(sourceSpeaker)} merged into ${getSpeakerDisplayName(targetSpeaker)}.`
+    });
+  };
+
 
   const formatTranscriptText = (text: string) => {
     if (!text) return text;
@@ -1173,6 +1226,12 @@ export default function TranscriptViewerPage() {
     try {
       setSaving(true);
 
+      const payload = {
+        timestampedTranscript: transcription.timestampedTranscript,
+        transcript: transcription.transcript,
+        speakerNames
+      };
+
       // If transcript is stored in Storage (large file), we need to use the API endpoint
       if (transcription.transcriptStoragePath) {
         console.log('[Save] Saving large transcript via API endpoint');
@@ -1184,20 +1243,23 @@ export default function TranscriptViewerPage() {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${token}`
           },
-          body: JSON.stringify({
-            timestampedTranscript: transcription.timestampedTranscript,
-            transcript: transcription.transcript
-          })
+          body: JSON.stringify(payload)
         });
 
         if (!response.ok) {
           throw new Error('Failed to save transcript to Storage');
         }
+
+        // Persist speaker metadata to Firestore as well
+        await updateTranscriptionStatus(transcription.id!, transcription.status, {
+          speakerNames
+        });
       } else {
         // Small transcript - save directly to Firestore
         console.log('[Save] Saving transcript to Firestore');
         await updateTranscriptionStatus(transcription.id!, 'complete', {
-          timestampedTranscript: transcription.timestampedTranscript
+          timestampedTranscript: transcription.timestampedTranscript,
+          speakerNames
         });
       }
 
@@ -1285,136 +1347,143 @@ export default function TranscriptViewerPage() {
     const identifiedSpeakers = allSpeakers.filter(speaker => speaker !== 'UU').sort();
     const hasUnknownSpeakers = allSpeakers.includes('UU');
 
-    // Initialize speaker order if not set
-    if (speakerOrder.length === 0 && identifiedSpeakers.length > 0) {
-      setSpeakerOrder(identifiedSpeakers);
-    }
+    // Speaker order is initialized by effect when transcription loads.
 
-    // Helper function to detect paragraph breaks based on context
-    const shouldBreakParagraph = (text: string, nextText?: string): boolean => {
-      if (!text) return false;
+    type ParagraphPiece =
+      | { type: 'text'; content: string }
+      | { type: 'timestamp'; time: number; content: string };
 
-      // Break after questions
-      if (/[?!]$/.test(text.trim())) return true;
+    const normalizeSegmentText = (text: string) =>
+      text
+        .replace(/\s+([,.!?;:])/g, '$1')
+        .replace(/\s+/g, ' ')
+        .trim();
 
-      // Break after long pauses (if we had pause data)
-      // Break after certain phrases that indicate topic changes
+    const shouldBreakParagraph = (
+      paragraphText: string,
+      currentSegment: typeof transcription.timestampedTranscript[number],
+      nextSegment?: typeof transcription.timestampedTranscript[number]
+    ): boolean => {
+      const trimmed = paragraphText.trim();
+      if (!trimmed) return false;
+
+      // Always break at strong sentence boundaries
+      if (/[?!]$/.test(trimmed)) return true;
+
+      // Prefer a new paragraph after full sentences when the paragraph is getting dense
+      const wordCount = trimmed.split(/\s+/).length;
+      if (wordCount >= 40 && /[.!?]$/.test(trimmed)) return true;
+
+      // Break after conversational topic signals
       const topicChangeIndicators = [
-        /\b(now|so|anyway|well|alright|okay)\b[.,]?\s*$/i,
-        /\b(moving on|next|let me)\b/i,
-        /\b(in conclusion|to summarize|finally)\b/i,
-        /\b(first|second|third|meanwhile|however|therefore)\b[.,]?\s*$/i
+        /\b(now|so|anyway|well|alright|okay|actually)\b[.,]?\s*$/i,
+        /\b(moving on|next|let me|let's|let us|talk about)\b/i,
+        /\b(in conclusion|to summarize|finally|in short)\b/i,
+        /\b(first|second|third|however|therefore|meanwhile)\b[.,]?\s*$/i
       ];
 
-      if (topicChangeIndicators.some(pattern => pattern.test(text))) return true;
+      if (topicChangeIndicators.some((pattern) => pattern.test(trimmed))) {
+        return true;
+      }
 
-      // Break if text is getting quite long (> 150 words approximately)
-      const wordCount = text.split(/\s+/).length;
-      if (wordCount > 30 && /[.!]$/.test(text.trim())) return true;
+      // Break on long pauses between segments
+      if (currentSegment.end && nextSegment?.start && nextSegment.start - currentSegment.end >= 2.5) {
+        return true;
+      }
+
+      // Break if the current paragraph is already long and the next segment starts a new sentence
+      if (wordCount >= 60 && nextSegment && /[.!?]$/.test(trimmed)) {
+        return true;
+      }
 
       return false;
     };
 
-    // Process segments to create continuous text flow with intelligent paragraph breaks
-    const processedSpeakerSegments = [];
-    let currentSpeaker = null;
-    let accumulatedText = '';
-    let nextTimestampTarget = timestampFrequency; // First target at the frequency interval
-    let pendingTimestamp = null; // Store timestamp to be inserted at next sentence end
-    let textParts = [];
-    let paragraphParts = [];
+    const processedSpeakerSegments: Array<{
+      speaker: string | undefined | null;
+      paragraphs: ParagraphPiece[][];
+    }> = [];
 
-    const addCurrentParagraph = () => {
-      if (accumulatedText.trim()) {
-        textParts.push({ type: 'text', content: accumulatedText.trim() });
-        accumulatedText = '';
-      }
+    let currentSpeaker: string | undefined | null = null;
+    let speakerParagraphs: ParagraphPiece[][] = [];
+    let currentParagraph: ParagraphPiece[] = [];
+    let nextTimestampTarget = timestampFrequency;
+    let pendingTimestamp:
+      | { time: number; content: string }
+      | null = null;
 
-      if (textParts.length > 0) {
-        paragraphParts.push([...textParts]);
-        textParts = [];
+    const finishParagraph = () => {
+      if (currentParagraph.length > 0) {
+        speakerParagraphs.push(currentParagraph);
+        currentParagraph = [];
       }
     };
 
-    const addCurrentSegment = () => {
-      // Add any remaining text as final paragraph
-      addCurrentParagraph();
-
-      // Only add segments that have actual content
-      if (paragraphParts.length > 0) {
+    const finishSpeaker = () => {
+      finishParagraph();
+      if (speakerParagraphs.length > 0) {
         processedSpeakerSegments.push({
           speaker: currentSpeaker,
-          paragraphs: [...paragraphParts]
+          paragraphs: speakerParagraphs
         });
       }
-
-      // Reset for next segment - but DON'T reset timestamp target, keep global timeline
-      paragraphParts = [];
-      // nextTimestampTarget stays the same to maintain continuous timeline
-      // pendingTimestamp also stays the same if there's one waiting
+      speakerParagraphs = [];
     };
 
-    // Helper to check if text ends a sentence
-    const endsWithSentence = (text: string): boolean => {
-      return /[.!?]$/.test(text.trim());
+    const appendText = (text: string) => {
+      const normalized = normalizeSegmentText(text);
+      if (!normalized) return;
+      currentParagraph.push({ type: 'text', content: normalized });
     };
 
     for (let i = 0; i < transcription.timestampedTranscript.length; i++) {
       const segment = transcription.timestampedTranscript[i];
+      const nextSegment = transcription.timestampedTranscript[i + 1];
       const speakerChanged = currentSpeaker !== null && currentSpeaker !== segment.speaker;
 
-      // If speaker changed, finalize current segment and start new one
       if (speakerChanged) {
-        addCurrentSegment();
+        finishSpeaker();
         currentSpeaker = segment.speaker;
       } else if (currentSpeaker === null) {
-        // First segment
         currentSpeaker = segment.speaker;
       }
 
-      // Check if we've passed a timestamp target and need to mark for insertion
+      // Intervals for inline timestamps
       if (segment.start >= nextTimestampTarget && !pendingTimestamp) {
         pendingTimestamp = {
           time: nextTimestampTarget,
           content: formatTimestamp(nextTimestampTarget)
         };
-        // Move to next target interval
         nextTimestampTarget += timestampFrequency;
       }
 
-      // Add the current segment text
-      const newText = (accumulatedText ? ' ' : '') + segment.text;
+      const segmentText = normalizeSegmentText(segment.text);
+      if (segmentText) {
+        appendText(segmentText);
+      }
 
-      // Check if we should insert the pending timestamp at this sentence end
-      if (pendingTimestamp && endsWithSentence(newText)) {
-        // Add accumulated text before timestamp
-        if (accumulatedText.trim()) {
-          textParts.push({ type: 'text', content: accumulatedText.trim() });
-          accumulatedText = '';
-        }
+      const paragraphText = currentParagraph.map((piece) => piece.content).join(' ').trim();
+      const endsSentence = /[.!?]$/.test(segmentText);
 
-        // Add the exact interval timestamp
-        textParts.push({
+      if (pendingTimestamp && endsSentence) {
+        currentParagraph.push({
           type: 'timestamp',
           time: pendingTimestamp.time,
           content: pendingTimestamp.content
         });
-
-        // Clear pending timestamp
         pendingTimestamp = null;
       }
 
-      // Check if we should break into a new paragraph
-      if (accumulatedText && shouldBreakParagraph(accumulatedText + newText)) {
-        // Complete current paragraph
-        addCurrentParagraph();
+      if (shouldBreakParagraph(paragraphText, segment, nextSegment)) {
+        finishParagraph();
       }
 
-      accumulatedText += newText;
+      if (speakerChanged && currentParagraph.length === 0 && currentSpeaker !== segment.speaker) {
+        currentSpeaker = segment.speaker;
+      }
     }
 
-    // Add the final segment
-    addCurrentSegment();
+    finishSpeaker();
 
     return (
       <div className="space-y-4">
@@ -1461,7 +1530,7 @@ export default function TranscriptViewerPage() {
                     >
                       <div className="p-3">
                         {/* Show speaker label on new speaker blocks */}
-                        {isNewSpeaker && (
+                        {isNewSpeaker && showSpeakerLabels && (
                           <div className="flex items-center gap-2 mb-2">
                             <div className={`px-3 py-1 rounded-full text-xs font-semibold ${getSpeakerColor(segment.speaker)}`}>
                               {getSpeakerDisplayName(segment.speaker)}
@@ -1626,7 +1695,7 @@ export default function TranscriptViewerPage() {
                 </div>
               )}
 
-              {/* Group segments by speaker for editing */}
+              {/* Group segments by speaker for editing - Word-like interface */}
               {(() => {
                 const speakerGroups: Array<{speaker: string, segments: Array<{text: string, index: number, start: number}>}> = [];
                 let currentGroup: {speaker: string, segments: Array<{text: string, index: number, start: number}>} | null = null;
@@ -1650,9 +1719,9 @@ export default function TranscriptViewerPage() {
                 return speakerGroups.map((group, groupIndex) => {
                   const firstSegmentIndex = group.segments[0].index;
                   const segmentIndices = group.segments.map(seg => seg.index);
+                  const editorKey = `editor-${groupIndex}`;
 
                   // Combine all segments in this group into one continuous text
-                  // Use edited text if available, otherwise use original
                   const groupText = group.segments.map(seg =>
                     editedSegments[seg.index] !== undefined ? editedSegments[seg.index] : seg.text
                   ).join(' ');
@@ -1661,119 +1730,109 @@ export default function TranscriptViewerPage() {
                     <div
                       key={groupIndex}
                       id={`segment-${firstSegmentIndex}`}
-                      className={`group rounded-lg border-2 transition-all duration-200 ${shouldDim(group.speaker) ? 'opacity-30 hover:opacity-50 border-gray-200' : isSpeakerHighlighted(group.speaker) ? 'border-blue-400 bg-blue-50/30 hover:border-blue-500' : 'border-gray-200 hover:border-blue-300'}`}
+                      className="my-6 rounded-lg border-2 border-gray-300 bg-white shadow-sm hover:shadow-md transition-shadow"
                     >
-                      <div className="p-4">
-                        {/* Speaker Label */}
-                        <div className="flex items-center gap-2 mb-3">
-                          <div className={`px-3 py-1 rounded-full text-xs font-semibold ${getSpeakerColor(group.speaker)}`}>
-                            {getSpeakerDisplayName(group.speaker)}
+                      {/* Word-like header with draggable speaker tag */}
+                      <div className="flex items-center gap-3 bg-gray-50 px-4 py-3 border-b border-gray-200 rounded-t-md">
+                        {/* Draggable Speaker Tag */}
+                        <div
+                          draggable
+                          onDragStart={(e) => {
+                            setDraggedSpeaker(group.speaker);
+                            e.dataTransfer.effectAllowed = 'move';
+                          }}
+                          onDragEnd={() => setDraggedSpeaker(null)}
+                          className={`px-3 py-1 rounded-full text-xs font-semibold cursor-move transition-all ${
+                            draggedSpeaker === group.speaker ? 'opacity-50 scale-95' : 'hover:shadow-md'
+                          } ${getSpeakerColor(group.speaker)}`}
+                          title="Drag to reorder speakers or click to edit"
+                        >
+                          {getSpeakerDisplayName(group.speaker)}
+                        </div>
+
+                        {/* Timestamp */}
+                        <span className="text-xs text-gray-500 font-mono ml-auto">
+                          {formatTimestamp(group.segments[0].start)}
+                        </span>
+                      </div>
+
+                      {/* Word-like editable paragraph area */}
+                      <div className="p-4 min-h-[120px]">
+                        {searchMatches.length > 0 && searchMatches.some(m => segmentIndices.includes(m.segmentIndex)) ? (
+                          // Read-only with highlights
+                          <div className="text-gray-800 leading-relaxed text-base">
+                            {renderTextWithHighlights(groupText, segmentIndices, group.segments)}
                           </div>
-                          <span className="text-xs text-gray-500 font-mono">
-                            {formatTimestamp(group.segments[0].start)}
-                          </span>
-                        </div>
-
-                        {/* Editable grouped content with inline word highlighting */}
-                        <div className="pl-4 border-l-2 border-gray-200">
-                          {searchMatches.length > 0 && searchMatches.some(m => segmentIndices.includes(m.segmentIndex)) ? (
-                            // Read-only view with highlights when search is active
-                            <div
-                              className="text-gray-800 leading-relaxed p-2 cursor-text min-h-[3rem]"
-                              onClick={(e) => {
-                                // Make editable when clicked
-                                const target = e.currentTarget;
-                                target.contentEditable = 'true';
-                                target.focus();
-                              }}
-                            >
-                              {renderTextWithHighlights(groupText, segmentIndices, group.segments)}
-                            </div>
-                          ) : (
-                            // Editable view when no search is active
-                            <div
-                              ref={(el) => {
-                                if (el && !el.dataset.initialized) {
+                        ) : (
+                          // Editable area - properly initialized
+                          <div
+                            key={editorKey}
+                            ref={(el) => {
+                              if (el) {
+                                contentEditableRefs.current[groupIndex] = el;
+                                const isFocused = document.activeElement === el;
+                                // Only sync DOM -> React when the element is not focused
+                                if (!isFocused && el.textContent !== groupText) {
                                   el.textContent = groupText;
-                                  el.dataset.initialized = 'true';
                                 }
-                              }}
-                              contentEditable
-                              suppressContentEditableWarning
-                              onInput={(e) => {
-                                const newText = e.currentTarget.textContent || '';
-                                console.log(`[Edit] Group ${groupIndex} changed`);
+                              } else {
+                                delete contentEditableRefs.current[groupIndex];
+                              }
+                            }}
+                            contentEditable
+                            suppressContentEditableWarning
+                            onPaste={(e) => {
+                              e.preventDefault();
+                              const pasteText = e.clipboardData.getData('text/plain');
+                              document.execCommand('insertText', false, pasteText);
+                            }}
+                            onInput={(e) => {
+                              const newText = e.currentTarget.textContent || '';
 
-                                // Split the edited text back into segments based on word count
-                                const words = newText.trim().split(/\s+/);
-                                let wordIndex = 0;
+                              // Batch updates: collect all segment edits
+                              const newEditedSegments: Record<number, string> = {};
+                              const words = newText.trim().split(/\s+/);
+                              let wordIndex = 0;
+                              let hasChanges = false;
 
-                                group.segments.forEach((segment) => {
-                                  const originalWords = segment.text.trim().split(/\s+/);
-                                  const segmentWordCount = originalWords.length;
-                                  const segmentWords = words.slice(wordIndex, wordIndex + segmentWordCount);
-                                  const segmentText = segmentWords.join(' ');
+                              group.segments.forEach((segment) => {
+                                const originalWords = segment.text.trim().split(/\s+/);
+                                const segmentWordCount = originalWords.length;
+                                const segmentWords = words.slice(wordIndex, wordIndex + segmentWordCount);
+                                const segmentText = segmentWords.join(' ') || '';
 
-                                  if (segmentText !== segment.text) {
-                                    setEditedSegments(prev => ({
-                                      ...prev,
-                                      [segment.index]: segmentText
-                                    }));
-                                  }
-
-                                  wordIndex += segmentWordCount;
-                                });
-
-                                // Handle any remaining words (in case text was added)
-                                if (wordIndex < words.length) {
-                                  const remainingText = words.slice(wordIndex).join(' ');
-                                  const lastSegment = group.segments[group.segments.length - 1];
-                                  const existingEdit = editedSegments[lastSegment.index] || lastSegment.text;
-                                  setEditedSegments(prev => ({
-                                    ...prev,
-                                    [lastSegment.index]: existingEdit + ' ' + remainingText
-                                  }));
+                                if (segmentText !== segment.text) {
+                                  newEditedSegments[segment.index] = segmentText;
+                                  hasChanges = true;
                                 }
-                              }}
-                              onBlur={(e) => {
-                                const newText = e.currentTarget.textContent || '';
-                                console.log(`[Edit] Group ${groupIndex} blur - saving all segments`);
 
-                                // On blur, just save the entire block to all segments proportionally
-                                const words = newText.trim().split(/\s+/);
-                                let wordIndex = 0;
+                                wordIndex += segmentWordCount;
+                              });
 
-                                group.segments.forEach((segment, segIndex) => {
-                                  const originalWords = segment.text.trim().split(/\s+/);
-                                  const segmentWordCount = originalWords.length;
-                                  const segmentWords = words.slice(wordIndex, wordIndex + segmentWordCount);
-                                  const segmentText = segmentWords.join(' ');
+                              // Handle remaining words
+                              if (wordIndex < words.length) {
+                                const remainingText = words.slice(wordIndex).join(' ');
+                                const lastSegment = group.segments[group.segments.length - 1];
+                                newEditedSegments[lastSegment.index] = (editedSegments[lastSegment.index] || lastSegment.text) + ' ' + remainingText;
+                                hasChanges = true;
+                              }
 
-                                  setEditedSegments(prev => ({
-                                    ...prev,
-                                    [segment.index]: segmentText
-                                  }));
-
-                                  wordIndex += segmentWordCount;
-                                });
-
-                                // Handle any remaining words
-                                if (wordIndex < words.length) {
-                                  const remainingText = words.slice(wordIndex).join(' ');
-                                  const lastSegment = group.segments[group.segments.length - 1];
-                                  const existingEdit = editedSegments[lastSegment.index] || lastSegment.text;
-                                  setEditedSegments(prev => ({
-                                    ...prev,
-                                    [lastSegment.index]: existingEdit + ' ' + remainingText
-                                  }));
-                                }
-                              }}
-                              className="text-gray-800 leading-relaxed outline-none focus:bg-yellow-50 rounded p-2 cursor-text min-h-[3rem]"
-                            >
-                              {groupText}
-                            </div>
-                          )}
-                        </div>
+                              if (hasChanges) {
+                                setEditedSegments(prev => ({
+                                  ...prev,
+                                  ...newEditedSegments
+                                }));
+                              }
+                            }}
+                            onBlur={(e) => {
+                              // Preserve content on blur
+                              e.currentTarget.textContent = e.currentTarget.textContent;
+                            }}
+                            className="text-gray-800 leading-relaxed text-base outline-none focus:ring-2 focus:ring-blue-400 rounded px-2 py-2 whitespace-pre-wrap break-words"
+                            style={{ minHeight: '120px' }}
+                          >
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -1791,7 +1850,7 @@ export default function TranscriptViewerPage() {
                   className={`group transition-all duration-200 ${dimmed ? 'opacity-30 hover:opacity-50' : ''} ${highlighted ? 'rounded-lg border-l-4 border-blue-400 bg-blue-50/30 pl-2' : ''}`}
                 >
                   {/* Speaker Label */}
-                  {speakerSegment.speaker && (
+                  {showSpeakerLabels && speakerSegment.speaker && (
                     <div className="flex items-center mb-4">
                       <div className={`px-3 py-1 rounded-full text-xs font-semibold ${getSpeakerColor(speakerSegment.speaker)}`}>
                         {getSpeakerDisplayName(speakerSegment.speaker)}
@@ -1964,6 +2023,48 @@ export default function TranscriptViewerPage() {
       </div>
     );
   }
+
+  const workspaceMode = isEditingSpeakerSegments
+    ? 'Editing Speakers'
+    : isEditing
+    ? 'Editing Transcript'
+    : 'Viewing';
+  const transcriptWordCount = getWordCount(transcription.transcript);
+  const speakerCount = orderedSpeakers.length;
+  const speakerSegmentCounts = (transcription.timestampedTranscript || []).reduce<Record<string, number>>((counts, segment) => {
+    if (segment.speaker && segment.speaker !== 'UU') {
+      counts[segment.speaker] = (counts[segment.speaker] || 0) + 1;
+    }
+    return counts;
+  }, {});
+  const timestampIntervalLabel = timestampFrequency === 30
+    ? '30 seconds'
+    : timestampFrequency === 60
+    ? '60 seconds'
+    : '5 minutes';
+  const speakerLabelPresets = [
+    'MEMBER',
+    'CLAIMANT',
+    'COUNSEL',
+    'WITNESS',
+    'OFFICER',
+    'ADJUDICATOR',
+    'REPRESENTATIVE',
+    'Interviewer',
+    'Participant',
+    'Host',
+    'Guest',
+    'Doctor',
+    'Patient',
+    'Nurse',
+    'Specialist',
+  ];
+  const futureWorkspaceTools = [
+    'Filler Word Tools',
+    'Duplicate Word Tools',
+    'Formatting Tools',
+    'Export Tools',
+  ];
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -2186,6 +2287,57 @@ export default function TranscriptViewerPage() {
 
               <div className="h-4 w-px bg-gray-300 mx-1" />
 
+              <Button
+                variant="outline"
+                onClick={() => setShowSpeakerLabels(prev => !prev)}
+                size="sm"
+                className="border-gray-300 text-gray-700 hover:bg-gray-50"
+              >
+                {showSpeakerLabels ? <EyeOff className="h-4 w-4 mr-1" /> : <Eye className="h-4 w-4 mr-1" />}
+                {showSpeakerLabels ? 'Hide labels' : 'Show labels'}
+              </Button>
+
+              {isEditingSpeakerSegments && orderedSpeakers.length > 1 && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-gray-500">Merge:</span>
+                  <select
+                    value={mergeSourceSpeaker}
+                    onChange={(e) => setMergeSourceSpeaker(e.target.value)}
+                    className="border border-gray-300 rounded-md px-2 py-1 text-xs bg-white"
+                  >
+                    <option value="">From</option>
+                    {orderedSpeakers.map((speaker) => (
+                      <option key={`merge-source-${speaker}`} value={speaker}>
+                        {getSpeakerDisplayName(speaker)}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={mergeTargetSpeaker}
+                    onChange={(e) => setMergeTargetSpeaker(e.target.value)}
+                    className="border border-gray-300 rounded-md px-2 py-1 text-xs bg-white"
+                    disabled={!mergeSourceSpeaker}
+                  >
+                    <option value="">Into</option>
+                    {orderedSpeakers
+                      .filter((speaker) => speaker !== mergeSourceSpeaker)
+                      .map((speaker) => (
+                        <option key={`merge-target-${speaker}`} value={speaker}>
+                          {getSpeakerDisplayName(speaker)}
+                        </option>
+                      ))}
+                  </select>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={!mergeSourceSpeaker || !mergeTargetSpeaker || mergeSourceSpeaker === mergeTargetSpeaker}
+                    onClick={() => mergeSpeakers(mergeSourceSpeaker, mergeTargetSpeaker)}
+                  >
+                    Merge
+                  </Button>
+                </div>
+              )}
+
               {/* Edit speakers button */}
               {isEditingSpeakerSegments ? (
                 <>
@@ -2272,6 +2424,387 @@ export default function TranscriptViewerPage() {
                   )}
                 </div>
 
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg text-[#003366]">Transcript Workspace</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-5">
+                <section className="space-y-3">
+                  <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500">
+                    Project Status
+                  </h3>
+                  <div className="space-y-2 text-sm">
+                    <div className="flex justify-between gap-3">
+                      <span className="text-gray-600">Mode:</span>
+                      <span className="font-medium text-[#003366] text-right">{workspaceMode}</span>
+                    </div>
+                    <div className="flex justify-between gap-3">
+                      <span className="text-gray-600">Status:</span>
+                      <span className="font-medium text-right">{saving ? 'Saving...' : 'Ready'}</span>
+                    </div>
+                    <div>
+                      <span className="text-gray-600 block mb-1">File:</span>
+                      <p className="font-medium text-gray-900 break-words">
+                        {transcription.originalFilename || transcription.filename || 'Untitled transcript'}
+                      </p>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="space-y-3 border-t pt-4">
+                  <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500">
+                    Transcript Snapshot
+                  </h3>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="rounded-lg bg-gray-50 p-3">
+                      <p className="text-gray-500">Words</p>
+                      <p className="text-lg font-semibold text-[#003366]">{transcriptWordCount}</p>
+                    </div>
+                    <div className="rounded-lg bg-gray-50 p-3">
+                      <p className="text-gray-500">Speakers</p>
+                      <p className="text-lg font-semibold text-[#003366]">{speakerCount}</p>
+                    </div>
+                    <div className="rounded-lg bg-gray-50 p-3">
+                      <p className="text-gray-500">Timestamps</p>
+                      <p className="text-lg font-semibold text-[#003366]">
+                        {timestampFrequency === 300 ? '5m' : `${timestampFrequency}s`}
+                      </p>
+                    </div>
+                    <div className="rounded-lg bg-gray-50 p-3">
+                      <p className="text-gray-500">Labels</p>
+                      <p className="text-lg font-semibold text-[#003366]">
+                        {showSpeakerLabels ? 'Shown' : 'Hidden'}
+                      </p>
+                    </div>
+                  </div>
+                </section>
+
+                <section className="space-y-3 border-t pt-4">
+                  <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500">
+                    Timestamp Tools
+                  </h3>
+                  <div className="space-y-3 rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <div className="flex items-center justify-between gap-3 text-sm">
+                      <span className="text-gray-600">Current interval:</span>
+                      <span className="font-medium text-[#003366] text-right">{timestampIntervalLabel}</span>
+                    </div>
+                    <label className="block space-y-1.5 text-sm">
+                      <span className="font-medium text-gray-700">Frequency</span>
+                      <select
+                        value={timestampFrequency}
+                        onChange={(e) => setTimestampFrequency(Number(e.target.value) as 30 | 60 | 300)}
+                        className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
+                        disabled={!transcription.timestampedTranscript || transcription.timestampedTranscript.length === 0}
+                      >
+                        <option value={30}>Every 30 seconds</option>
+                        <option value={60}>Every 1 minute</option>
+                        <option value={300}>Every 5 minutes</option>
+                      </select>
+                    </label>
+                    <p className="text-xs text-gray-600">
+                      This changes how timestamps are displayed and exported. It does not change the original audio timing.
+                    </p>
+                    <p className="text-xs font-medium text-[#003366]">
+                      Changes apply immediately to the transcript view.
+                    </p>
+                  </div>
+                </section>
+
+                <section className="space-y-3 border-t pt-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500">
+                      Speaker Tools
+                    </h3>
+                    <span className="text-xs text-gray-500">
+                      {speakerCount} speaker{speakerCount === 1 ? '' : 's'}
+                    </span>
+                  </div>
+
+                  {speakerCount > 0 ? (
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        {orderedSpeakers.map((speaker) => (
+                          <div key={`workspace-speaker-${speaker}`} className="rounded-lg border border-gray-200 bg-gray-50 p-3">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="text-xs text-gray-500">{speaker}</p>
+                                <p className="font-semibold text-gray-900 break-words">
+                                  {getSpeakerDisplayName(speaker)}
+                                </p>
+                                <p className="text-xs text-gray-500">
+                                  {speakerSegmentCounts[speaker] || 0} segment{speakerSegmentCounts[speaker] === 1 ? '' : 's'}
+                                </p>
+                              </div>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 text-xs"
+                                onClick={() => setEditingSpeaker(speaker)}
+                                disabled={saving}
+                              >
+                                Rename
+                              </Button>
+                            </div>
+
+                            {editingSpeaker === speaker && (
+                              <div className="mt-3 space-y-2">
+                                <input
+                                  type="text"
+                                  autoFocus
+                                  defaultValue={getSpeakerDisplayName(speaker)}
+                                  onBlur={(e) => {
+                                    const newName = e.target.value.trim();
+                                    if (newName) updateSpeakerName(speaker, newName);
+                                    else setEditingSpeaker(null);
+                                  }}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      const newName = e.currentTarget.value.trim();
+                                      if (newName) updateSpeakerName(speaker, newName);
+                                      else setEditingSpeaker(null);
+                                    } else if (e.key === 'Escape') {
+                                      setEditingSpeaker(null);
+                                    }
+                                  }}
+                                  className="w-full rounded-md border border-blue-300 bg-white px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-200"
+                                  placeholder="Speaker name"
+                                />
+                                <select
+                                  defaultValue=""
+                                  onChange={(e) => {
+                                    const preset = e.currentTarget.value;
+                                    if (preset) {
+                                      updateSpeakerName(speaker, preset);
+                                      e.currentTarget.value = '';
+                                    }
+                                  }}
+                                  className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
+                                  disabled={saving}
+                                >
+                                  <option value="">Preset label</option>
+                                  {speakerLabelPresets.map((preset) => (
+                                    <option key={`workspace-preset-${speaker}-${preset}`} value={preset}>
+                                      {preset}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="space-y-2 rounded-lg border border-gray-200 p-3">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-sm font-medium text-gray-700">Speaker labels</span>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-8"
+                            onClick={() => setShowSpeakerLabels(prev => !prev)}
+                            disabled={saving}
+                          >
+                            {showSpeakerLabels ? <EyeOff className="h-4 w-4 mr-2" /> : <Eye className="h-4 w-4 mr-2" />}
+                            {showSpeakerLabels ? 'Hide' : 'Show'}
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2 rounded-lg border border-gray-200 p-3">
+                        <p className="text-sm font-medium text-gray-700">Merge speakers</p>
+                        <div className="grid grid-cols-1 gap-2">
+                          <select
+                            value={mergeSourceSpeaker}
+                            onChange={(e) => setMergeSourceSpeaker(e.target.value)}
+                            className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
+                            disabled={!isEditingSpeakerSegments || saving || speakerCount < 2}
+                          >
+                            <option value="">Merge from</option>
+                            {orderedSpeakers.map((speaker) => (
+                              <option key={`workspace-merge-source-${speaker}`} value={speaker}>
+                                {getSpeakerDisplayName(speaker)}
+                              </option>
+                            ))}
+                          </select>
+                          <select
+                            value={mergeTargetSpeaker}
+                            onChange={(e) => setMergeTargetSpeaker(e.target.value)}
+                            className="rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
+                            disabled={!isEditingSpeakerSegments || saving || !mergeSourceSpeaker}
+                          >
+                            <option value="">Merge into</option>
+                            {orderedSpeakers
+                              .filter((speaker) => speaker !== mergeSourceSpeaker)
+                              .map((speaker) => (
+                                <option key={`workspace-merge-target-${speaker}`} value={speaker}>
+                                  {getSpeakerDisplayName(speaker)}
+                                </option>
+                              ))}
+                          </select>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="w-full justify-center"
+                            disabled={!isEditingSpeakerSegments || saving || !mergeSourceSpeaker || !mergeTargetSpeaker || mergeSourceSpeaker === mergeTargetSpeaker}
+                            onClick={() => mergeSpeakers(mergeSourceSpeaker, mergeTargetSpeaker)}
+                          >
+                            Merge Speakers
+                          </Button>
+                        </div>
+                        {!isEditingSpeakerSegments && (
+                          <p className="text-xs text-gray-500">
+                            Enter speaker edit mode to merge speakers.
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="space-y-2">
+                        {!isEditingSpeakerSegments ? (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="w-full justify-start"
+                            onClick={() => setIsEditingSpeakerSegments(true)}
+                            disabled={saving || !transcription.timestampedTranscript || transcription.timestampedTranscript.length === 0}
+                          >
+                            <Edit3 className="h-4 w-4 mr-2" />
+                            Edit Speakers
+                          </Button>
+                        ) : (
+                          <>
+                            <Button
+                              type="button"
+                              size="sm"
+                              className="w-full justify-start bg-green-600 text-white hover:bg-green-700"
+                              onClick={saveSpeakerSegmentChanges}
+                              disabled={saving}
+                            >
+                              {saving ? (
+                                <LoadingSpinner size="sm" className="mr-2" />
+                              ) : (
+                                <Save className="h-4 w-4 mr-2" />
+                              )}
+                              Save Speaker Changes
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="w-full justify-start"
+                              onClick={() => {
+                                setIsEditingSpeakerSegments(false);
+                                loadTranscription();
+                              }}
+                              disabled={saving}
+                            >
+                              <X className="h-4 w-4 mr-2" />
+                              Cancel Speaker Edit
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="rounded-lg bg-gray-50 p-3 text-sm text-gray-500">
+                      No detected speakers.
+                    </p>
+                  )}
+                </section>
+
+                <section className="space-y-3 border-t pt-4">
+                  <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500">
+                    Quick Tools
+                  </h3>
+                  <div className="space-y-2">
+                    {!isEditing && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="w-full justify-start"
+                        onClick={() => setIsEditing(true)}
+                        disabled={saving || transcription.status !== 'complete'}
+                      >
+                        <Edit3 className="h-4 w-4 mr-2" />
+                        Edit Transcript
+                      </Button>
+                    )}
+
+                    {isEditing && (
+                      <>
+                        <Button
+                          type="button"
+                          size="sm"
+                          className="w-full justify-start bg-green-600 text-white hover:bg-green-700"
+                          onClick={saveEdits}
+                          disabled={saving}
+                        >
+                          {saving ? (
+                            <LoadingSpinner size="sm" className="mr-2" />
+                          ) : (
+                            <Save className="h-4 w-4 mr-2" />
+                          )}
+                          Save Transcript
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="w-full justify-start"
+                          onClick={() => {
+                            setIsEditing(false);
+                            setEditedSegments({});
+                            setEditedTranscript('');
+                          }}
+                          disabled={saving}
+                        >
+                          <X className="h-4 w-4 mr-2" />
+                          Cancel Edit
+                        </Button>
+                      </>
+                    )}
+
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="w-full justify-start"
+                      onClick={() => setShowSearchPanel(true)}
+                      disabled={saving || !isEditing || !transcription.timestampedTranscript || transcription.timestampedTranscript.length === 0}
+                    >
+                      <Search className="h-4 w-4 mr-2" />
+                      Open Search
+                    </Button>
+                  </div>
+                </section>
+
+                <section className="space-y-3 border-t pt-4">
+                  <h3 className="text-sm font-semibold uppercase tracking-wide text-gray-500">
+                    Future Tools
+                  </h3>
+                  <div className="space-y-2">
+                    {futureWorkspaceTools.map((tool) => (
+                      <Button
+                        key={tool}
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="w-full justify-between text-gray-400"
+                        disabled
+                      >
+                        <span>{tool}</span>
+                        <span className="text-xs">Coming soon</span>
+                      </Button>
+                    ))}
+                  </div>
+                </section>
               </CardContent>
             </Card>
             </div>

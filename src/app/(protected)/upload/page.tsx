@@ -517,6 +517,10 @@ export default function UploadPage() {
           filePath: result.fullPath,
           downloadURL: result.downloadURL,
           status: initialStatus,
+          type:
+            transcriptionMode === 'human'
+              ? 'office'
+              : 'transcription',
           mode: transcriptionMode as TranscriptionMode,
           domain: transcriptionDomain, // Include domain for specialized vocabulary
           language: transcriptionLanguage, // Store language selection
@@ -535,7 +539,12 @@ export default function UploadPage() {
           addOnCost: fileAddOnCost,
           hasPackage: hasPackage,
           // Template for human transcription
-          ...templateData
+          ...templateData,
+          // Office Studio fields
+          ...(transcriptionMode === 'human' && {
+            officeStatus: 'submitted' as const,
+            officePriority: rushDelivery ? 'rush' : 'standard'
+          })
         };
 
         // Only add specialInstructions if it has content

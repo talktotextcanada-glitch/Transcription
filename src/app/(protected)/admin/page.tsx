@@ -14,7 +14,7 @@ import { usePackages } from '@/contexts/PackageContext';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { TranscriptionJob } from '@/lib/firebase/transcriptions';
-import { collection, getDocs, query, orderBy, limit, getFirestore, where, doc, getDoc } from 'firebase/firestore';
+import { collection, getDocs, query, orderBy, getFirestore, where, doc, getDoc } from 'firebase/firestore';
 
 export default function AdminPage() {
   const { userData, loading: authLoading } = useAuth();
@@ -25,6 +25,11 @@ export default function AdminPage() {
   const [systemStats, setSystemStats] = useState({
     totalUsers: 0,
     activeJobs: 0,
+    queuedJobs: 0,
+    processingJobs: 0,
+    pendingReviewJobs: 0,
+    failedJobs: 0,
+    rushJobs: 0,
     totalRevenue: 0,
     avgProcessingTime: '2.5hrs',
     totalWalletBalance: 0,
@@ -32,7 +37,7 @@ export default function AdminPage() {
     activePackages: 0,
     totalWalletTopups: 0
   });
-
+  
   // Analytics state
   const [analytics, setAnalytics] = useState<{
     configured: boolean;
@@ -46,6 +51,10 @@ export default function AdminPage() {
   const [pendingJobs, setPendingJobs] = useState<TranscriptionJob[]>([]);
   const [pendingJobsLoading, setPendingJobsLoading] = useState(true);
   const [userEmails, setUserEmails] = useState<{[key: string]: string}>({});
+
+  // Filter state for admin queue
+  const [queueFilter, setQueueFilter] = useState<'all' | 'transcription' | 'office'>('all');
+  const [officeStatusFilter, setOfficeStatusFilter] = useState<'all' | 'submitted' | 'assigned' | 'in_progress' | 'waiting_review' | 'completed' | 'delivered'>('all');
 
   // Load GA4 analytics
   const loadAnalytics = useCallback(async () => {
@@ -97,6 +106,8 @@ export default function AdminPage() {
       const actionableJobs = allJobs.filter(job => {
         const isStuckProcessing = job.status === 'processing' && !job.speechmaticsJobId;
         return (
+          // Office Studio jobs (except completed/cancelled)
+          (job.type === 'office' && !['complete', 'cancelled'].includes(job.status)) ||
           // Human mode jobs (except completed/cancelled)
           (job.mode === 'human' && !['complete', 'cancelled'].includes(job.status)) ||
           // Hybrid mode jobs needing review
@@ -168,8 +179,7 @@ export default function AdminPage() {
           getAllUsers(),
           getDocs(query(
             collection(db, 'transcriptions'),
-            orderBy('createdAt', 'desc'),
-            limit(3)
+            orderBy('createdAt', 'desc')
           )),
           getAllTransactions(),
           getDocs(query(collection(db, 'packages'))),
@@ -199,8 +209,16 @@ export default function AdminPage() {
         });
 
         // Calculate system statistics
-        const activeJobs = jobs.filter(j => j.status === 'processing' || j.status === 'queued').length;
-
+        const queuedJobs = jobs.filter(j => j.status === 'queued').length;
+        const processingJobs = jobs.filter(j => j.status === 'processing').length;
+        const pendingReviewJobs = jobs.filter(j =>
+          j.status === 'pending-review' || j.status === 'under-review'
+                                             ).length;
+        const failedJobs = jobs.filter(j => j.status === 'failed').length;
+        const rushJobs = jobs.filter(j => j.rushDelivery === true).length;
+        
+        const activeJobs = queuedJobs + processingJobs;
+        
         const walletTopups = allTransactions.filter(t =>
           t.type === 'wallet_topup' || t.type === 'purchase'
         );
@@ -255,17 +273,22 @@ export default function AdminPage() {
           }
         }
 
-        setSystemStats({
-          totalUsers: users.length,
-          activeJobs,
-          totalRevenue,
-          avgProcessingTime,
-          totalWalletBalance,
-          totalPackagesSold,
-          activePackages: activePackagesCount,
-          totalWalletTopups
-        });
-
+       setSystemStats({
+         totalUsers: users.length,
+         activeJobs,
+         queuedJobs,
+         processingJobs,
+         pendingReviewJobs,
+         failedJobs,
+         rushJobs,
+         totalRevenue,
+         avgProcessingTime,
+         totalWalletBalance,
+         totalPackagesSold,
+         activePackages: activePackagesCount,
+         totalWalletTopups
+       });
+        
       } catch (error) {
         console.error('Error loading admin data:', error);
       } finally {
@@ -298,6 +321,25 @@ export default function AdminPage() {
     return null;
   }
 
+  // Filter pending jobs by type
+  const transcriptionJobs = pendingJobs.filter(
+    job => job.type !== 'office'
+  );
+
+  const officeJobs = pendingJobs.filter(
+    job => job.type === 'office'
+  );
+
+  // Get displayed jobs based on filter
+  const displayedJobs = 
+    queueFilter === 'transcription' 
+      ? transcriptionJobs 
+      : queueFilter === 'office' 
+      ? officeStatusFilter === 'all'
+        ? officeJobs
+        : officeJobs.filter(job => job.officeStatus === officeStatusFilter)
+      : pendingJobs;
+
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
       <Header />
@@ -326,8 +368,8 @@ export default function AdminPage() {
                 </div>
               </div>
             </CardContent>
-          </Card>
-
+          </Card>                
+    
           <Card className="border-0 shadow-sm">
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
@@ -375,13 +417,16 @@ export default function AdminPage() {
         </div>
 
         {/* Key Metrics - Row 2 */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+          
           <Card className="border-0 shadow-sm">
             <CardContent className="p-6">
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-sm font-medium text-gray-600">Active Jobs</p>
-                  <p className="text-2xl font-bold text-[#003366]">{systemStats.activeJobs}</p>
+                  <p className="text-2xl font-bold text-[#003366]">
+                    {systemStats.activeJobs}
+                  </p>
                 </div>
                 <div className="w-12 h-12 bg-[#003366] rounded-lg flex items-center justify-center">
                   <FileText className="h-6 w-6 text-white" />
@@ -389,40 +434,128 @@ export default function AdminPage() {
               </div>
             </CardContent>
           </Card>
-
-          <Card className="border-0 shadow-sm">
-            <CardContent className="p-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-medium text-gray-600">Avg. Processing</p>
-                  <p className="text-2xl font-bold text-[#003366]">{systemStats.avgProcessingTime}</p>
-                </div>
-                <div className="w-12 h-12 bg-[#2c3e50] rounded-lg flex items-center justify-center">
-                  <Clock className="h-6 w-6 text-white" />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Package Management Link */}
-          <Link href="/admin/packages">
-            <Card className="border-0 shadow-sm hover:shadow-md transition-shadow cursor-pointer bg-gradient-to-br from-[#b29dd9] to-[#9d87c7]">
-              <CardContent className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium text-white/90">Manage Packages</p>
-                    <p className="text-lg font-bold text-white">Package Settings</p>
-                    <p className="text-xs text-white/80 mt-1">Configure pricing & minutes</p>
-                  </div>
-                  <div className="w-12 h-12 bg-white/20 rounded-lg flex items-center justify-center">
-                    <ArrowRight className="h-6 w-6 text-white" />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
-          </Link>
+          
+      <Card className="border-0 shadow-sm">
+        <CardContent className="p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Queued Jobs</p>
+              <p className="text-2xl font-bold text-[#003366]">
+                {systemStats.queuedJobs}
+              </p>
+            </div>
+            <div className="w-12 h-12 bg-yellow-500 rounded-lg flex items-center justify-center">
+              <Clock className="h-6 w-6 text-white" />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+          
+      <Card className="border-0 shadow-sm">
+        <CardContent className="p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Pending Review</p>
+              <p className="text-2xl font-bold text-[#003366]">
+                {systemStats.pendingReviewJobs}
+              </p>
+            </div>
+            <div className="w-12 h-12 bg-orange-500 rounded-lg flex items-center justify-center">
+              <Eye className="h-6 w-6 text-white" />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+          
+      <Card className="border-0 shadow-sm">
+        <CardContent className="p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Failed Jobs</p>
+              <p className="text-2xl font-bold text-red-600">
+                {systemStats.failedJobs}
+              </p>
+            </div>
+            <div className="w-12 h-12 bg-red-500 rounded-lg flex items-center justify-center">
+              <RefreshCw className="h-6 w-6 text-white" />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+      
+      <Card className="border-0 shadow-sm">
+        <CardContent className="p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Rush Jobs</p>
+              <p className="text-2xl font-bold text-[#003366]">
+                {systemStats.rushJobs}
+              </p>
+            </div>
+            <div className="w-12 h-12 bg-purple-600 rounded-lg flex items-center justify-center">
+              <Timer className="h-6 w-6 text-white" />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+          
+      <Card className="border-0 shadow-sm">
+        <CardContent className="p-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-600">Avg. Processing</p>
+              <p className="text-2xl font-bold text-[#003366]">
+                {systemStats.avgProcessingTime}
+              </p>
+            </div>
+            <div className="w-12 h-12 bg-[#2c3e50] rounded-lg flex items-center justify-center">
+              <Clock className="h-6 w-6 text-white" />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+          
+  <Link href="/admin/packages">
+    <Card className="border-0 shadow-sm hover:shadow-md transition-shadow cursor-pointer bg-gradient-to-br from-[#b29dd9] to-[#9d87c7]">
+      <CardContent className="p-6">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-white/90">Manage Packages</p>
+            <p className="text-lg font-bold text-white">Package Settings</p>
+            <p className="text-xs text-white/80 mt-1">
+              Configure pricing & minutes
+            </p>
+          </div>
+          <div className="w-12 h-12 bg-white/20 rounded-lg flex items-center justify-center">
+            <ArrowRight className="h-6 w-6 text-white" />
+          </div>
         </div>
+      </CardContent>
+    </Card>
+  </Link>
 
+</div>
+              
+      {systemStats.failedJobs > 0 && (
+      <Card className="border-2 border-red-300 bg-red-50 mb-6">
+        <CardContent className="p-4 flex items-center justify-between">
+          <div>
+            <p className="font-semibold text-red-700">
+              ⚠ Failed Jobs Require Attention
+            </p>
+            <p className="text-sm text-red-600">
+              {systemStats.failedJobs} transcription job(s) failed and may need retry or review.
+            </p>
+          </div>
+          
+          <Link href="/admin/queue">
+            <Button className="bg-red-600 hover:bg-red-700 text-white">
+              View Failed Jobs
+            </Button>
+          </Link>
+        </CardContent>
+      </Card>
+    )}
         {/* Site Analytics */}
         {!analyticsLoading && analytics && (
           <div className="mb-8">
@@ -510,6 +643,105 @@ export default function AdminPage() {
           </div>
         )}
 
+        {/* Queue Filter Buttons */}
+        <div className="mb-6 flex flex-wrap gap-2">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-gray-600">Filter:</span>
+          </div>
+          <Button
+            onClick={() => setQueueFilter('all')}
+            variant={queueFilter === 'all' ? 'default' : 'outline'}
+            size="sm"
+            className={queueFilter === 'all' ? 'bg-[#003366] hover:bg-[#004080]' : ''}
+          >
+            All Jobs {pendingJobs.length > 0 && `(${pendingJobs.length})`}
+          </Button>
+          <Button
+            onClick={() => setQueueFilter('transcription')}
+            variant={queueFilter === 'transcription' ? 'default' : 'outline'}
+            size="sm"
+            className={queueFilter === 'transcription' ? 'bg-indigo-600 hover:bg-indigo-700' : ''}
+          >
+            Transcription {transcriptionJobs.length > 0 && `(${transcriptionJobs.length})`}
+          </Button>
+          <Button
+            onClick={() => {
+              setQueueFilter('office');
+              setOfficeStatusFilter('all');
+            }}
+            variant={queueFilter === 'office' ? 'default' : 'outline'}
+            size="sm"
+            className={queueFilter === 'office' ? 'bg-[#b29dd9] hover:bg-[#9d87c7]' : ''}
+          >
+            Document Workspace {officeJobs.length > 0 && `(${officeJobs.length})`}
+          </Button>
+        </div>
+
+        {/* Office Status Filters - Only show when Office filter is selected */}
+        {queueFilter === 'office' && (
+          <div className="mb-6 flex flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium text-gray-600">Office Status:</span>
+            </div>
+            <Button
+              onClick={() => setOfficeStatusFilter('all')}
+              variant={officeStatusFilter === 'all' ? 'default' : 'outline'}
+              size="sm"
+              className={officeStatusFilter === 'all' ? 'bg-[#b29dd9] text-white hover:bg-[#9d87c7]' : ''}
+            >
+              All
+            </Button>
+            <Button
+              onClick={() => setOfficeStatusFilter('submitted')}
+              variant={officeStatusFilter === 'submitted' ? 'default' : 'outline'}
+              size="sm"
+              className={officeStatusFilter === 'submitted' ? 'bg-blue-600 text-white hover:bg-blue-700' : ''}
+            >
+              📨 Submitted {officeJobs.filter(j => j.officeStatus === 'submitted').length > 0 && `(${officeJobs.filter(j => j.officeStatus === 'submitted').length})`}
+            </Button>
+            <Button
+              onClick={() => setOfficeStatusFilter('assigned')}
+              variant={officeStatusFilter === 'assigned' ? 'default' : 'outline'}
+              size="sm"
+              className={officeStatusFilter === 'assigned' ? 'bg-cyan-600 text-white hover:bg-cyan-700' : ''}
+            >
+              👤 Assigned {officeJobs.filter(j => j.officeStatus === 'assigned').length > 0 && `(${officeJobs.filter(j => j.officeStatus === 'assigned').length})`}
+            </Button>
+            <Button
+              onClick={() => setOfficeStatusFilter('in_progress')}
+              variant={officeStatusFilter === 'in_progress' ? 'default' : 'outline'}
+              size="sm"
+              className={officeStatusFilter === 'in_progress' ? 'bg-yellow-600 text-white hover:bg-yellow-700' : ''}
+            >
+              ⚙️ In Progress {officeJobs.filter(j => j.officeStatus === 'in_progress').length > 0 && `(${officeJobs.filter(j => j.officeStatus === 'in_progress').length})`}
+            </Button>
+            <Button
+              onClick={() => setOfficeStatusFilter('waiting_review')}
+              variant={officeStatusFilter === 'waiting_review' ? 'default' : 'outline'}
+              size="sm"
+              className={officeStatusFilter === 'waiting_review' ? 'bg-orange-600 text-white hover:bg-orange-700' : ''}
+            >
+              👀 Waiting Review {officeJobs.filter(j => j.officeStatus === 'waiting_review').length > 0 && `(${officeJobs.filter(j => j.officeStatus === 'waiting_review').length})`}
+            </Button>
+            <Button
+              onClick={() => setOfficeStatusFilter('completed')}
+              variant={officeStatusFilter === 'completed' ? 'default' : 'outline'}
+              size="sm"
+              className={officeStatusFilter === 'completed' ? 'bg-green-600 text-white hover:bg-green-700' : ''}
+            >
+              ✅ Completed {officeJobs.filter(j => j.officeStatus === 'completed').length > 0 && `(${officeJobs.filter(j => j.officeStatus === 'completed').length})`}
+            </Button>
+            <Button
+              onClick={() => setOfficeStatusFilter('delivered')}
+              variant={officeStatusFilter === 'delivered' ? 'default' : 'outline'}
+              size="sm"
+              className={officeStatusFilter === 'delivered' ? 'bg-purple-600 text-white hover:bg-purple-700' : ''}
+            >
+              📦 Delivered {officeJobs.filter(j => j.officeStatus === 'delivered').length > 0 && `(${officeJobs.filter(j => j.officeStatus === 'delivered').length})`}
+            </Button>
+          </div>
+        )}
+
         {/* Your Work - Pending Jobs */}
         <Card className="border-2 border-[#b29dd9] shadow-md">
           <CardHeader className="pb-3">
@@ -517,10 +749,18 @@ export default function AdminPage() {
               <div>
                 <CardTitle className="text-xl font-semibold text-[#003366] flex items-center gap-2">
                   <FileText className="h-5 w-5" />
-                  Your Work
+                  {queueFilter === 'transcription' 
+                    ? 'Transcription Jobs Needing Admin Action' 
+                    : queueFilter === 'office' 
+                    ? 'Document Workspace Projects Needing Admin Action' 
+                    : 'Jobs Needing Admin Action'}
                 </CardTitle>
                 <p className="text-sm text-gray-600 mt-1">
-                  Jobs waiting for transcription or review
+                  {queueFilter === 'transcription'
+                    ? 'AI, hybrid, and human transcription jobs requiring review, processing, or retry'
+                    : queueFilter === 'office'
+                    ? 'Document Workspace dictation and document projects needing admin attention'
+                    : 'Human review, failed jobs, rush jobs, and items requiring admin attention'}
                 </p>
               </div>
               <div className="flex items-center gap-2">
@@ -549,15 +789,27 @@ export default function AdminPage() {
                 <LoadingSpinner size="md" />
                 <span className="ml-2 text-gray-600">Loading pending jobs...</span>
               </div>
-            ) : pendingJobs.length === 0 ? (
+            ) : displayedJobs.length === 0 ? (
               <div className="text-center py-8 text-gray-500">
                 <FileText className="h-12 w-12 mx-auto mb-4 text-gray-300" />
-                <p className="text-lg font-medium">No pending jobs</p>
-                <p className="text-sm">You're all caught up! Check back later for new work.</p>
+                <p className="text-lg font-medium">
+                  {queueFilter === 'transcription'
+                    ? 'No transcription jobs pending'
+                    : queueFilter === 'office'
+                    ? 'No Document Workspace projects in queue'
+                    : 'No pending jobs'}
+                </p>
+                <p className="text-sm">
+                  {queueFilter === 'transcription'
+                    ? 'All transcription jobs are caught up!'
+                    : queueFilter === 'office'
+                    ? 'All Document Workspace projects are caught up!'
+                    : "You're all caught up! Check back later for new work."}
+                </p>
               </div>
             ) : (
               <div className="space-y-3">
-                {pendingJobs.map(job => (
+                {displayedJobs.map(job => (
                   <WorkQueueCard
                     key={job.id}
                     job={job}
@@ -565,7 +817,7 @@ export default function AdminPage() {
                     onComplete={loadPendingJobs}
                   />
                 ))}
-                {pendingJobs.length >= 10 && (
+                {displayedJobs.length >= 10 && (
                   <div className="text-center pt-2">
                     <Link href="/admin/queue" className="text-sm text-[#003366] hover:underline">
                       View all jobs in queue →

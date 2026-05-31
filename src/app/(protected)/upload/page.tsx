@@ -29,11 +29,26 @@ interface UploadFile {
   duration: number; // in seconds (exact duration)
 }
 
+type ExpectedSpeakerCountChoice = '1' | '2' | '3' | '4' | '5' | 'unknown';
+
+const expectedSpeakerCountOptions: Array<{
+  value: ExpectedSpeakerCountChoice;
+  label: string;
+}> = [
+  { value: '1', label: '1 speaker' },
+  { value: '2', label: '2 speakers' },
+  { value: '3', label: '3 speakers' },
+  { value: '4', label: '4 speakers' },
+  { value: '5', label: '5+ speakers' },
+  { value: 'unknown', label: 'Not sure' },
+];
+
 export default function UploadPage() {
   const [uploadedFiles, setUploadedFiles] = useState<UploadFile[]>([]);
   const [transcriptionMode, setTranscriptionMode] = useState('ai');
   const [transcriptionLanguage, setTranscriptionLanguage] = useState('en');
   const [transcriptionDomain, setTranscriptionDomain] = useState<TranscriptionDomain>('general');
+  const [expectedSpeakerCount, setExpectedSpeakerCount] = useState<ExpectedSpeakerCountChoice>('unknown');
   const [specialInstructions, setSpecialInstructions] = useState('');
   const [isDragOver, setIsDragOver] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
@@ -47,7 +62,7 @@ export default function UploadPage() {
   const [patientName, setPatientName] = useState('');
   const [location, setLocation] = useState('');
   const [locationEnabled, setLocationEnabled] = useState(false);
-  const [includeFiller, setIncludeFiller] = useState(false);
+  const includeFiller = true;
 
   // Template file for human transcription
   const [templateFile, setTemplateFile] = useState<File | null>(null);
@@ -517,6 +532,10 @@ export default function UploadPage() {
           filePath: result.fullPath,
           downloadURL: result.downloadURL,
           status: initialStatus,
+          type:
+            transcriptionMode === 'human'
+              ? 'office'
+              : 'transcription',
           mode: transcriptionMode as TranscriptionMode,
           domain: transcriptionDomain, // Include domain for specialized vocabulary
           language: transcriptionLanguage, // Store language selection
@@ -526,8 +545,11 @@ export default function UploadPage() {
           projectName: projectName.trim() || undefined,
           patientName: patientName.trim() || undefined,
           location: location.trim() || undefined,
-          // Filler words option
+          // Preserve verbatim transcription output; filler cleanup belongs in post-transcription tools.
           includeFiller,
+          ...(expectedSpeakerCount !== 'unknown' && {
+            expectedSpeakerCount: Number(expectedSpeakerCount) as 1 | 2 | 3 | 4 | 5
+          }),
           // Add-on options
           rushDelivery: (transcriptionMode === 'hybrid' || transcriptionMode === 'human') ? rushDelivery : false,
           multipleSpeakers: (transcriptionMode === 'hybrid' || transcriptionMode === 'human') ? multipleSpeakers : false,
@@ -535,7 +557,12 @@ export default function UploadPage() {
           addOnCost: fileAddOnCost,
           hasPackage: hasPackage,
           // Template for human transcription
-          ...templateData
+          ...templateData,
+          // Office Studio fields
+          ...(transcriptionMode === 'human' && {
+            officeStatus: 'submitted' as const,
+            officePriority: rushDelivery ? 'rush' : 'standard'
+          })
         };
 
         // Only add specialInstructions if it has content
@@ -1143,58 +1170,6 @@ export default function UploadPage() {
             </CardContent>
           </Card>
 
-          {/* Filler Words Option */}
-          <Card className="border-0 shadow-sm">
-            <CardHeader>
-              <CardTitle className="text-lg font-semibold text-[#003366]">
-                💬 Filler Words
-              </CardTitle>
-              <p className="text-sm text-gray-600 mt-2">
-                Choose whether to include or remove filler words (um, uh, like, you know, etc.)
-              </p>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center justify-between p-4 border rounded-lg">
-                <div className="flex-1">
-                  <div className="font-medium text-gray-900">Include Filler Words</div>
-                  <p className="text-sm text-gray-600 mt-1">
-                    {includeFiller
-                      ? "Transcript will include all filler words for verbatim accuracy"
-                      : "Filler words will be removed for cleaner, more readable transcripts"}
-                  </p>
-                </div>
-                <label className="relative inline-flex items-center cursor-pointer ml-4">
-                  <input
-                    type="checkbox"
-                    checked={includeFiller}
-                    onChange={(e) => setIncludeFiller(e.target.checked)}
-                    className="sr-only peer"
-                  />
-                  <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-[#b29dd9]/30 rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#b29dd9]"></div>
-                </label>
-              </div>
-
-              {/* Information box */}
-              <div className={`mt-4 p-4 border rounded-lg ${includeFiller ? 'bg-amber-50 border-amber-200' : 'bg-green-50 border-green-200'}`}>
-                <div className="flex items-start space-x-2">
-                  <div className={`mt-0.5 ${includeFiller ? 'text-amber-600' : 'text-green-600'}`}>
-                    {includeFiller ? '📝' : '✨'}
-                  </div>
-                  <div>
-                    <p className={`text-sm font-medium ${includeFiller ? 'text-amber-800' : 'text-green-800'}`}>
-                      {includeFiller ? 'Verbatim Mode' : 'Clean Mode'}
-                    </p>
-                    <p className={`text-sm mt-1 ${includeFiller ? 'text-amber-700' : 'text-green-700'}`}>
-                      {includeFiller
-                        ? 'Perfect for legal depositions, interviews, and situations requiring exact word-for-word transcripts.'
-                        : 'Ideal for business meetings, presentations, and content creation where readability is key.'}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
           {/* Transcript Metadata */}
           <Card className="border-0 shadow-sm">
             <CardHeader>
@@ -1269,6 +1244,40 @@ export default function UploadPage() {
                   <div><strong>Date & Time:</strong> Upload time will be used</div>
                 </div>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Speaker Count Expectation */}
+          <Card className="border-0 shadow-sm">
+            <CardHeader>
+              <CardTitle className="text-lg font-semibold text-[#003366]">
+                How many people are speaking in this file?
+              </CardTitle>
+              <p className="text-sm text-gray-600 mt-2">
+                This helps with review and speaker cleanup. It does not affect pricing.
+              </p>
+            </CardHeader>
+            <CardContent>
+              <RadioGroup
+                value={expectedSpeakerCount}
+                onValueChange={(value) => setExpectedSpeakerCount(value as ExpectedSpeakerCountChoice)}
+                className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3"
+              >
+                {expectedSpeakerCountOptions.map((option) => (
+                  <Label
+                    key={option.value}
+                    htmlFor={`expected-speakers-${option.value}`}
+                    className={`cursor-pointer border rounded-lg p-3 flex items-center justify-between gap-2 transition-colors ${
+                      expectedSpeakerCount === option.value
+                        ? 'border-[#b29dd9] ring-2 ring-[#b29dd9] bg-[#b29dd9]/5'
+                        : 'border-gray-200 hover:border-[#b29dd9] hover:bg-gray-50'
+                    }`}
+                  >
+                    <span className="text-sm font-medium text-gray-900">{option.label}</span>
+                    <RadioGroupItem value={option.value} id={`expected-speakers-${option.value}`} />
+                  </Label>
+                ))}
+              </RadioGroup>
             </CardContent>
           </Card>
 

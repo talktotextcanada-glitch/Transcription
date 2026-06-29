@@ -1,6 +1,6 @@
 # Project Tracker
 
-> Last updated: 2026-03-28
+> Last updated: 2026-06-29
 
 ## Project Summary
 Firebase-powered Next.js transcription platform with role-based auth, Stripe payments, Speechmatics AI integration, and admin workflow for human/hybrid transcription processing.
@@ -12,6 +12,7 @@ Firebase-powered Next.js transcription platform with role-based auth, Stripe pay
 - [ ] Production deployment tuning (APP_URL localhost warning in build)
 
 ## Recently Completed
+- [x] Contact form now sends real emails — new /api/contact route (Zod-validated) emails submissions to Jennifer via Resend, reply-to the sender; replaced the fake setTimeout that silently discarded messages. Deployed to production and verified live (2026-06-29)
 - [x] SRT and VTT subtitle export — download transcripts as subtitle files from the format dropdown (2026-03-28)
 - [x] Sticky floating toolbar on transcript viewer — Edit/Share/Export/Speaker controls stay visible while scrolling long transcripts (2026-03-28)
 - [x] Moved build-time dependencies (typescript, tailwindcss, postcss) to dependencies for Vercel compatibility (2026-03-28)
@@ -36,6 +37,8 @@ Firebase-powered Next.js transcription platform with role-based auth, Stripe pay
 - None
 
 ## Key Decisions
+- (2026-06-29) Production (www.talktotext.ca) deploys from the **JJOUE/Transcription** repo's **main** branch (protected) via Vercel — NOT talktotextcanada-glitch/Transcription. The `mechanical-transcript-formatting` branch only produces preview deploys and is far behind main (do not merge it into main — it would delete ~9.5k lines of newer prod code). Ship prod changes as clean single-purpose PRs into JJOUE/main.
+- (2026-06-29) Contact form reuses the existing Resend integration (src/lib/email/simple-email.ts); requires RESEND_API_KEY in the Production env. Without the key the endpoint returns 502 and the form shows an honest error instead of faking success.
 - (2026-03-28) Subtitle export (SRT/VTT) includes speaker name prefixes and respects edited segment text; generated client-side via Blob download
 - (2026-03-28) Sticky toolbar has two rows: action buttons (Edit/Share/Export/Search) + speaker controls (timestamp freq, speaker pills, highlight, edit speakers)
 - (2026-03-23) Account deletion removes Firebase Auth + Firestore user doc + subcollections + transcriptions + transactions + storage files; admins cannot delete other admin accounts without removing role first

@@ -1,5 +1,5 @@
 import jsPDF from 'jspdf';
-import { Document, Packer, Paragraph, TextRun, AlignmentType, Header, Footer, Table, TableRow, TableCell, WidthType, TextDirection, PageBreak } from 'docx';
+import { Document, Packer, Paragraph, TextRun, AlignmentType, Header, Footer, Table, TableRow, TableCell, WidthType, TextDirection, PageBreak, ImageRun } from 'docx';
 import { TranscriptionJob, TranscriptSegment } from '@/lib/firebase/transcriptions';
 import { Timestamp } from 'firebase/firestore';
 
@@ -14,6 +14,16 @@ export interface TranscriptTemplateData {
   date: string;
   transcriptContent: string;
   timestampedTranscript?: TranscriptSegment[]; // New field for timestamped data
+}
+
+async function fetchLogoAsArrayBuffer(imagePath: string): Promise<ArrayBuffer | null> {
+  try {
+    const response = await fetch(imagePath);
+    if (!response.ok) return null;
+    return await response.arrayBuffer();
+  } catch {
+    return null;
+  }
 }
 
 // Utility function to format seconds into MM:SS or HH:MM:SS format
@@ -555,35 +565,39 @@ function generateDocxTranscriptContent(templateData: TranscriptTemplateData, opt
 }
 
 export async function exportTranscriptDOCX(templateData: TranscriptTemplateData, options?: ExportOptions): Promise<void> {
+  const logoData = await fetchLogoAsArrayBuffer('/images/logo.png');
+
   const doc = new Document({
     sections: [
       {
         headers: {
           default: new Header({
             children: [
-              // Professional header matching PDF with proper spacing
+              // Logo-only professional header
               new Paragraph({
-                children: [
-                  new TextRun({
-                    text: "TALK TO TEXT CANADA",
-                    bold: true,
-                    size: 36, // Match PDF header size
-                    color: "003366", // Match the brand color
+                children: logoData ? [
+                  new ImageRun({
+                    data: logoData,
+                    transformation: {
+                      width: 110, // ~1.15 inches at 96 DPI
+                      height: 35,
+                    },
+                    type: 'png',
                   }),
-                ],
+                ] : [new TextRun('')],
                 alignment: AlignmentType.LEFT,
-                spacing: { before: 200, after: 200 },
+                spacing: { before: 100, after: 200 },
               }),
-              // Header underline matching PDF
+              // Subtle separator line
               new Paragraph({
-                children: [new TextRun("")],
-                spacing: { after: 300 },
+                children: [new TextRun('')],
+                spacing: { after: 200 },
                 border: {
                   bottom: {
-                    color: "000000",
+                    color: "B29DD9",
                     space: 1,
                     style: "single",
-                    size: 8, // Slightly thicker to match PDF
+                    size: 4, // Subtle line
                   },
                 },
               }),
@@ -620,10 +634,10 @@ export async function exportTranscriptDOCX(templateData: TranscriptTemplateData,
           }),
         },
         children: [
-          // Spacing after header
+          // Minimal spacing after logo header
           new Paragraph({
             children: [new TextRun("")],
-            spacing: { after: 400 },
+            spacing: { after: 200 },
           }),
 
           // Metadata table - dynamically build rows for existing data only
